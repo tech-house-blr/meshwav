@@ -192,8 +192,8 @@ fn samples() -> Vec<Message> {
         Message::Pong { echo_us: 1, t_us: 2 },
         Message::Stats { received: 10, lost: 1, late: 2, concealed: 3, buffer_ms: 20, relayed: true },
         Message::Bye { reason: 4 },
-        Message::SetConfig { req: 7, kbps: 128, frame_ms: 20 },
-        Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20 },
+        Message::SetConfig { req: 7, kbps: 128, frame_ms: 20, codec: 0 },
+        Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20, codec: 1 },
         Message::ConfigRejected { req: 8, reason: 1 },
     ]
 }
@@ -300,13 +300,13 @@ fn control_packet_type_is_sealed_and_authenticated() {
     let key = [9u8; 32];
     let mut s = Sealer::new(&key, Direction::ReceiverToAgent, 2, 0);
     let mut o = Opener::new(&key, Direction::ReceiverToAgent, 2);
-    let body = Message::SetConfig { req: 1, kbps: 96, frame_ms: 5 }.encode();
+    let body = Message::SetConfig { req: 1, kbps: 96, frame_ms: 5, codec: 0 }.encode();
     let h = Header { ptype: PacketType::Control, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
     let mut out = Vec::new();
     s.seal(h, &body, &mut out).unwrap();
     let (hh, pt) = o.open(&out).unwrap();
     assert_eq!(hh.ptype, PacketType::Control);
-    assert_eq!(Message::decode(&pt).unwrap().unwrap().0, Message::SetConfig { req: 1, kbps: 96, frame_ms: 5 });
+    assert_eq!(Message::decode(&pt).unwrap().unwrap().0, Message::SetConfig { req: 1, kbps: 96, frame_ms: 5, codec: 0 });
     // a flipped bit anywhere fails authentication
     let mut bad = out.clone();
     bad[25] ^= 1;
@@ -317,7 +317,9 @@ fn control_packet_type_is_sealed_and_authenticated() {
 #[test]
 fn runtime_config_messages_have_fixed_wire_bytes() {
     let hex = |m: Message| m.encode().iter().map(|b| format!("{b:02x}")).collect::<String>();
-    assert_eq!(hex(Message::SetConfig { req: 7, kbps: 128, frame_ms: 20 }), "00080b000700000080" .to_string() + "14");
-    assert_eq!(hex(Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20 }), "00080c000700000080".to_string() + "14");
+    assert_eq!(hex(Message::SetConfig { req: 7, kbps: 128, frame_ms: 20, codec: 0 }), "00090b000700000080".to_string() + "1400");
+    assert_eq!(hex(Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20, codec: 1 }), "00090c000700000080".to_string() + "1401");
+    assert_eq!(hex(Message::SetConfig { req: 1, kbps: 0, frame_ms: 0, codec: 2 }), "00090b0001000000000002");
+    assert_eq!(hex(Message::ConfigApplied { req: 1, kbps: 160, frame_ms: 10, codec: 2 }), "00090c0001000000a00a02");
     assert_eq!(hex(Message::ConfigRejected { req: 8, reason: 1 }), "00040d000801");
 }

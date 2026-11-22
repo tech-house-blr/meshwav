@@ -32,11 +32,14 @@ object Stats {
     @Volatile var kbps = 0          // 0 = not known yet
     @Volatile var frameMs = 0
     @Volatile var configNote = ""
+    @Volatile var lossless = false
+    @Volatile var qualityNote = ""   // e.g. why lossless was dropped
+    @Volatile var output = ""        // what Android actually granted for playback
 
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
-        kbps = 0; frameMs = 0; configNote = ""
+        kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""
     }
 }
 
@@ -70,6 +73,7 @@ class StreamReceiver(
     private val lock = Object()
     private var jb = JitterBuffer.forFrameMs(FRAME_MS)
     private val cfg = ConfigClient()
+    private val guard = LosslessGuard()
     // Counters of jitter buffers retired by a frame-size switch, so the totals keep growing.
     private val base = LongArray(8)
     @Volatile private var frameChanged = false
@@ -223,7 +227,12 @@ class StreamReceiver(
                         socket?.send(DatagramPacket(d, d.size))
                         nextPunch = now + if (++n < 5) 150L else 1000L
                     }
-                    val req = synchronized(cfg) { cfg.tick(now, Controls.desiredKbps, Controls.desiredFrameMs) }
+                    if (Stats.lossless && Controls.desiredCodec == ControlWire.CODEC_PCM &&
+                        guard.feed(now, Stats.received, Stats.lost + Stats.late + Stats.underruns)) {
+                        Controls.desiredCodec = ControlWire.CODEC_OPUS
+                        Stats.qualityNote = "Lossless stopped: this connection could not carry it (lost or late packets). Back on Opus."
+                    }
+                    val req = synchronized(cfg) { cfg.tick(now, Controls.desiredKbps, Controls.desiredFrameMs, Controls.desiredCodec) }
                     if (req != null) {
                         val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, req)
                         socket?.send(DatagramPacket(d, d.size))
@@ -297,6 +306,8 @@ class StreamReceiver(
                 continue
             }
             if (p.type != Wire.TYPE_AUDIO || p.fragCnt != 1) continue
+            if (!ControlWire.audioPlausible(p.flags, p.payload.size)) continue
+            val pcmPacket = ControlWire.isPcm(p.flags)
             lastAudio = now
             val ms = ControlWire.frameMsFromFlags(p.flags)
             synchronized(lock) {
@@ -309,7 +320,13 @@ class StreamReceiver(
                 jb.push(p.seq, p.payload, now)
                 lock.notifyAll()
             }
-            if (ms != 0) synchronized(cfg) { cfg.frameSeen(ms); Stats.frameMs = ms }
+            synchronized(cfg) {
+                // While lossless the packets are 5 ms whatever Opus size was asked for, so they say nothing about it.
+                if (ms != 0 && !pcmPacket) cfg.frameSeen(ms)
+                if (ms != 0) Stats.frameMs = ms
+                if (pcmPacket != Stats.lossless) { Stats.lossless = pcmPacket; guard.reset() }
+                cfg.codecSeen(pcmPacket)
+            }
         }
     }
 
@@ -324,6 +341,20 @@ class StreamReceiver(
             .build()
         track.play()
         return track
+    }
+
+    /** What Android actually opened, as reported by the AudioTrack. It cannot show whether the system mixer resamples. */
+    private fun describeOutput(t: AudioTrack): String {
+        val enc = when (t.audioFormat) { AudioFormat.ENCODING_PCM_16BIT -> "16-bit"; AudioFormat.ENCODING_PCM_FLOAT -> "float"; else -> "format ${t.audioFormat}" }
+        val dev = try {
+            when (val ty = t.routedDevice?.type) {
+                null -> "route unknown"
+                1 -> "phone earpiece"; 2 -> "phone speaker"; 3, 4 -> "wired headphones"
+                7 -> "Bluetooth call"; 8 -> "Bluetooth A2DP"; 11, 12, 22 -> "USB audio"; 26 -> "Bluetooth LE"
+                else -> "output type $ty"
+            }
+        } catch (_: Exception) { "route unknown" }
+        return "${t.sampleRate} Hz, $enc, $dev"
     }
 
     /** The agent changed its frame size: start a fresh buffer sized for it, keeping the running totals. Caller holds [lock]. */
@@ -366,13 +397,14 @@ class StreamReceiver(
                     publishStats()
                 }
                 val pcm = when (out.kind) {
-                    JitterBuffer.Kind.FRAME -> concealer.accept(decoder.decode(out.payload!!, frameMs * 1000L))
+                    JitterBuffer.Kind.FRAME -> concealer.accept(out.payload!!.let { if (it.size == ControlWire.PCM_FRAME_BYTES) it else decoder.decode(it, frameMs * 1000L) })
                     JitterBuffer.Kind.LOST -> concealer.conceal(48 * frameMs * 4)
                     JitterBuffer.Kind.WAIT -> continue
                 }
                 if (pcm.isNotEmpty()) {
                     track.write(pcm, 0, pcm.size)
                     if (Stats.state != "Playing") Stats.state = "Playing"
+                    if (Stats.output.isEmpty()) Stats.output = describeOutput(track)
                 }
             }
         } catch (_: InterruptedException) {

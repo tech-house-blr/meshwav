@@ -13,20 +13,20 @@ class ControlTest {
     }
 
     @Test fun encodesTheRustBytes() {
-        assertEquals("00080b00070000008014", ControlWire.encodeSetConfig(7, 128, 20).hex())
+        assertEquals("00090b0007000000801400", ControlWire.encodeSetConfig(7, 128, 20).hex())
     }
 
     @Test fun decodesTheRustBytes() {
-        assertEquals(ControlWire.Msg.Applied(7, 128, 20), ControlWire.decode(hex("00080c00070000008014")))
+        assertEquals(ControlWire.Msg.Applied(7, 128, 20, 1), ControlWire.decode(hex("00090c0007000000801401")))
         assertEquals(ControlWire.Msg.Rejected(8, 1), ControlWire.decode(hex("00040d000801")))
-        assertEquals(ControlWire.Msg.SetConfig(7, 128, 20), ControlWire.decode(hex("00080b00070000008014")))
+        assertEquals(ControlWire.Msg.SetConfig(7, 128, 20, 0), ControlWire.decode(hex("00090b0007000000801400")))
     }
 
     @Test fun rejectsMalformed() {
         assertNull(ControlWire.decode(ByteArray(0)))
         assertNull(ControlWire.decode(hex("0008")))
-        assertNull(ControlWire.decode(hex("00080c000700000080")))        // truncated
-        assertNull(ControlWire.decode(hex("00080c0007000000801400")))    // trailing byte
+        assertNull(ControlWire.decode(hex("00090c00070000008014")))        // truncated
+        assertNull(ControlWire.decode(hex("00090c000700000080140100")))    // trailing byte
         assertNull(ControlWire.decode(hex("00040c000801")))              // wrong length for the type
         assertNull(ControlWire.decode(hex("00010c")))
         assertNull(ControlWire.decode(hex("0000")))
@@ -54,7 +54,7 @@ class ControlTest {
         assertNull(c.tick(200, 128, 10))               // too soon
         val r2 = decodeReq(c.tick(400, 128, 10)!!)
         assertEquals(r1.req, r2.req)                   // a retry reuses the id
-        c.onMessage(ControlWire.Msg.Applied(r2.req, 128, 10))
+        c.onMessage(ControlWire.Msg.Applied(r2.req, 128, 10, 1))
         assertEquals(128, c.appliedKbps)
         assertNull(c.tick(1000, 128, 10))              // done, nothing more to send
     }
@@ -99,9 +99,65 @@ class ControlTest {
 
     @Test fun newSessionForgetsAppliedState() {
         val c = ConfigClient()
-        c.onMessage(ControlWire.Msg.Applied(1, 160, 10))
+        c.onMessage(ControlWire.Msg.Applied(1, 160, 10, 1))
         assertNull(c.tick(0, 160, 10))
         c.reset()
         assertNotNull(c.tick(0, 160, 10))                 // agent state unknown again: ask once more
+    }
+
+    @Test fun losslessRequestMatchesRust() {
+        assertEquals("00090b0001000000000002", ControlWire.encodeSetConfig(1, 0, 0, 2).hex())
+        assertEquals(ControlWire.Msg.Applied(1, 160, 10, 2), ControlWire.decode(hex("00090c0001000000a00a02")))
+    }
+
+    @Test fun pcmPacketsMustBeOneWholeFiveMsFrame() {
+        val pcm = ControlWire.FLAG_PCM or (1 shl 2)           // PCM, 5 ms
+        assertTrue(ControlWire.audioPlausible(pcm, 960))
+        assertFalse(ControlWire.audioPlausible(pcm, 959))
+        assertFalse(ControlWire.audioPlausible(pcm, 1164))
+        assertFalse(ControlWire.audioPlausible(ControlWire.FLAG_PCM or (2 shl 2), 960))  // PCM claiming 10 ms
+        assertFalse(ControlWire.audioPlausible(ControlWire.FLAG_PCM, 960))               // PCM without a frame size
+        assertTrue(ControlWire.audioPlausible(2 shl 2, 160))   // Opus
+        assertFalse(ControlWire.audioPlausible(2 shl 2, 960))  // size says PCM, flag says Opus
+        assertFalse(ControlWire.audioPlausible(2 shl 2, 0))
+    }
+
+    @Test fun clientAsksForLosslessOnlyWhenNotAlreadyPlaying() {
+        val c = ConfigClient()
+        c.codecSeen(false)
+        val r = decodeReq(c.tick(0, 0, 0, ControlWire.CODEC_PCM)!!)
+        assertEquals(ControlWire.CODEC_PCM, r.codec)
+        assertEquals(0, r.kbps); assertEquals(0, r.frameMs)  // nothing else asked
+        c.onMessage(ControlWire.Msg.Applied(r.req, 160, 10, ControlWire.CODEC_PCM))
+        assertNull(c.tick(1000, 0, 0, ControlWire.CODEC_PCM))
+        c.codecSeen(true)
+        assertNull(c.tick(2000, 0, 0, ControlWire.CODEC_PCM))
+        assertEquals(ControlWire.CODEC_OPUS, decodeReq(c.tick(3000, 0, 0, ControlWire.CODEC_OPUS)!!).codec) // and back
+    }
+
+    @Test fun refusedCodecIsNotAskedAgain() {
+        val c = ConfigClient()
+        c.codecSeen(false)
+        val r = decodeReq(c.tick(0, 0, 0, ControlWire.CODEC_PCM)!!)
+        c.onMessage(ControlWire.Msg.Rejected(r.req, ControlWire.REJECT_CODEC))
+        assertNull(c.tick(1000, 0, 0, ControlWire.CODEC_PCM))
+        assertTrue(c.note!!.contains("codec"))
+    }
+
+    @Test fun guardFiresOnlyForSustainedLossWithEnoughTraffic() {
+        val g = LosslessGuard(windowMs = 4000, minPackets = 400, maxBad = 0.02)
+        var good = 0L; var bad = 0L; var t = 0L
+        fun run(sec: Int, lossPct: Double): Boolean {
+            var fired = false
+            repeat(sec) { good += (200 * (1 - lossPct)).toLong(); bad += (200 * lossPct).toLong(); t += 1000; if (g.feed(t, good, bad)) fired = true }
+            return fired
+        }
+        assertFalse(run(12, 0.0))      // clean link
+        assertFalse(run(12, 0.01))     // 1% is tolerated
+        assertTrue(run(5, 0.05))       // 5% is not
+        g.reset()
+        assertFalse(g.feed(t, good, bad))
+        t += 4000; good += 10; bad += 10   // a window with almost no traffic proves nothing
+        assertFalse(g.feed(t, good, bad))
     }
 }
