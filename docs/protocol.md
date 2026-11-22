@@ -40,7 +40,7 @@ Receiver sends an authenticated UDP "punch" packet (type 0x02, AEAD-sealed) so t
 +-------+-------+-------+-------+
 | payload (AEAD ciphertext) ... | 16-byte Poly1305 tag
 ```
-Header = 20 bytes, authenticated as AAD. Nonce = 4 bytes direction/stream salt || u64 packet counter (seq extended). Replays and out-of-window seq are dropped (sliding window of 1024).
+Header = 20 bytes, authenticated as AAD. Nonce (12 bytes) = direction(1) | 0(3) | seq(4) | stream_id(4). The key is per session; seq is a u32 and a sender MUST rekey (new control handshake) before it wraps (the reference sender refuses to send past 2^32-1). Replays and out-of-window seq are dropped (sliding window of 1024); the replay window is updated only after authentication.
 
 ### Sizing
 Tailscale MTU is 1280. Max UDP payload kept <= 1200 bytes including header and tag, so max codec bytes per packet = 1164.
