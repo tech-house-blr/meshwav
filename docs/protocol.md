@@ -3,6 +3,18 @@
 Two channels between agent (A) and receiver (R). R initiates. A listens only on its tailnet IP(s).
 All integers are big-endian.
 
+## 0. Handshake and session keys (implemented, M4b)
+Deviations from the original design below, made for the first integration: the handshake runs over the same UDP socket (no TCP control channel yet) and uses `SHA256` instead of `BLAKE2s`, because Android has no BLAKE2s in its platform crypto and we avoid extra dependencies. Rust uses `snow`; Kotlin implements the initiator by hand (X25519 on BigInteger, HMAC-SHA256 HKDF, ChaCha20-Poly1305 from javax.crypto). Both are checked byte-for-byte against `docs/vectors/noise_v1.txt`.
+
+- Patterns: `Noise_XX_25519_ChaChaPoly_SHA256` (reconnect) and `Noise_XXpsk3_25519_ChaChaPoly_SHA256` (pairing). Prologue `meshwav-v1`. The receiver is always the initiator.
+- PSK = SHA-256("meshwav-pair-v1" | agent static public key | 6-digit code). The pairing line carries the agent's public key, so the phone pins it before connecting and an impostor agent is rejected before the phone sends its own identity.
+- Datagram: `"MW" | 0x01 | kind | sid:u32 | step:u8 | noise message`. kind 0x10 = XX, 0x11 = XXpsk3 (audio packet types are 1..3, so they never collide). Step 1 and 3 go to the agent, step 2 is the reply. Message 3 carries the device name (max 32 chars) as payload.
+- Loss handling: the receiver retransmits message 1 (the agent replays its stored reply, no new work) and sends message 3 three times (the agent ignores duplicates).
+- Session keys are the two raw Noise split outputs: initiator-to-responder protects receiver-to-agent packets, the other protects agent-to-receiver. Keys are fresh per handshake, sequence numbers restart at 0.
+- Agent keepalive: an empty sealed `Punch` on stream id 2 (own nonce space, so audio `seq` stays gap-free) right after the handshake and then every second. It confirms pairing to the phone and tells it the agent is alive even when nothing is playing. The receiver re-handshakes after 4 s without any authentic packet.
+- Agent policy: XX only for authorized keys; XXpsk3 only while a pairing window is open (2 min, single use, 5 failed codes then 60 s lockout, no reply while closed or locked). At most 16 pending handshakes, 5 s TTL, 30 msg1 per second.
+- Agent files (0600): `~/.config/meshwav/identity` (private key, hex) and `authorized_peers` (`<public key> <name>` per line).
+
 ## 1. Control channel (TCP, default port 47800)
 Encrypted and mutually authenticated with a Noise XX handshake (Noise_XX_25519_ChaChaPoly_BLAKE2s) using long-term static keys.
 Each side pins the peer's static key after pairing (section 4). Messages after the handshake: `u16 length | u8 type | body`.

@@ -22,4 +22,8 @@ pub enum ProtocolError {
     SeqExhausted,
     #[error("malformed control message: {0}")]
     BadControl(&'static str),
+    #[error("handshake failed: {0}")]
+    Handshake(&'static str),
+    #[error("peer static key does not match the pinned key")]
+    PeerMismatch,
 }

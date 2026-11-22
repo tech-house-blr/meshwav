@@ -3,8 +3,10 @@
 pub mod control;
 pub mod crypto;
 pub mod error;
+pub mod handshake;
 pub mod packet;
 pub mod reassembly;
 pub mod replay;
+pub mod server;
 
 pub use error::ProtocolError;

@@ -43,12 +43,20 @@ class PlaybackService : Service() {
             .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause), "Stop", stop).build())
             .setOngoing(true).build()
         startForeground(1, n)
-        val key = try { Wire.hex(intent?.getStringExtra("key") ?: "") } catch (e: Exception) { Stats.state = "Bad key"; teardown(); return START_NOT_STICKY }
-        if (host.isEmpty()) { teardown(); return START_NOT_STICKY }
+        val pkHex = intent?.getStringExtra("pk") ?: ""
+        if (host.isEmpty() || !Regex("[0-9a-f]{64}").matches(pkHex)) { Stats.state = "Pairing error: bad agent key"; teardown(); return START_NOT_STICKY }
+        val agentPk = Wire.hex(pkHex)
+        val code = intent?.getStringExtra("code")?.takeIf { Handshake.validCode(it) }
+        val store = PairingStore(applicationContext)
         wake = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "meshwav:play").apply { acquire() }
         wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "meshwav:wifi").apply { acquire() }
         receiver?.stop()
-        receiver = StreamReceiver(host, port, key, applicationContext).also { it.start() }
+        receiver = StreamReceiver(
+            host, port, store.identityPrivate(), agentPk, code, android.os.Build.MODEL ?: "Android",
+            applicationContext,
+            onPaired = { store.savePaired(host, port, agentPk) },
+        ).also { it.start() }
+        if (code == null) store.savePaired(host, port, agentPk) // already paired: keep it current
         running = true
         return START_NOT_STICKY
     }

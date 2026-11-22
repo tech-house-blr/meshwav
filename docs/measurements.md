@@ -30,3 +30,10 @@ Findings:
   39% (48k/16), 59% (48k/24), 52% (96k/24), 44% (192k/24) of raw PCM. Each frame decodes independently; corruption is detected by the frame CRC.
 - flacenc caps sample rate at 96 kHz; we label frames with 96 kHz for higher rates (does not affect coding; verified bit-exact at 192 kHz).
 - PCM s16/s24/f32 round-trip exactly.
+
+## M4b: pairing and handshake (verified, loopback only)
+
+- Rust: 13 handshake/server tests (vectors, pairing, reconnect, wrong code, lockout, expiry, pin mismatch, retransmits, pending cap, rate limit, sanitising) and 3 end-to-end tests that run the real agent binary with a fake `parec`.
+- Kotlin: 10 JVM tests (RFC 7748 X25519 vectors, XX and XXpsk3 byte-identical to the Rust vectors, pin mismatch, tampering, framing).
+- Interop: the Kotlin `Handshake.run` (JVM, on liberation) paired with the real Rust agent over 127.0.0.1, received gap-free audio plus keepalives, reconnected with the pinned key only, was refused with a wrong pin, an unpaired key got no audio, and the used code got no reply.
+- Not measured: handshake time on the phone (BigInteger X25519 is slower than native), behaviour over a real tailnet path, and the phone UI flow (a hands-on check is pending).

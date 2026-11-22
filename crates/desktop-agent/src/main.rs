@@ -1,25 +1,63 @@
-//! meshwav-agent: capture system audio, encode Opus, send AEAD-sealed UDP to the receiver that
-//! most recently authenticated. Receivers subscribe by sending sealed `Punch` packets about
-//! once a second; the agent stops sending after `PEER_TIMEOUT` of silence.
+//! meshwav-agent: capture system audio, encode Opus, send AEAD-sealed UDP to the paired receiver
+//! that most recently completed a Noise handshake. The receiver keeps the session alive with
+//! sealed `Punch` packets about once a second; the agent stops sending after `PEER_TIMEOUT`.
 //!
-//!   meshwav-agent [--bind IP:PORT] [--key-file PATH] [--source SINK.monitor] [--kbps 160] [--frame-ms 10]
+//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--kbps 160] [--frame-ms 10]
 //!
-//! Defaults: bind = <tailscale ipv4>:47900, key-file = ~/.config/meshwav/key (created 0600 on
-//! first run). The listener refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
+//! Pairing: `--pair` (or typing `pair` on stdin) opens a 2-minute window with a 6-digit code.
+//! Defaults: bind = <tailscale ipv4>:47900, identity = ~/.config/meshwav/identity and paired
+//! devices = ~/.config/meshwav/authorized_peers (both 0600, created on first use). The listener
+//! refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
 //! PipeWire-pulse) on the default sink's monitor.
+mod store;
+
 use audio_codec::opus::OpusEncoder;
 use audio_protocol::crypto::{Direction, Opener, Sealer};
+use audio_protocol::handshake::{self, hex};
 use audio_protocol::packet::{Header, PacketType};
+use audio_protocol::server::{Outcome, Server};
 use audio_transport::is_tailnet_or_loopback;
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::net::{SocketAddr, UdpSocket};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const STREAM_ID: u32 = 1;
+/// Keepalives use their own stream id (own nonce/seq space) so audio sequence numbers stay gap-free.
+const CONTROL_STREAM: u32 = 2;
+const KEEPALIVE: Duration = Duration::from_secs(1);
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PORT: u16 = 47900;
+
+/// The one active receiver session. A new successful handshake replaces it.
+struct Session {
+    addr: SocketAddr,
+    peer: [u8; 32],
+    last_seen: Instant,
+    sealer: Sealer,
+    keepalive: Sealer,
+    opener: Opener,
+}
+
+impl Session {
+    /// Sealed empty `Punch` on the control stream: proves liveness (and the handshake) to the receiver.
+    fn send_keepalive(&mut self, sock: &UdpSocket) {
+        let h = Header {
+            ptype: PacketType::Punch,
+            stream_id: 0,
+            seq: 0,
+            timestamp: 0,
+            frag_idx: 0,
+            frag_cnt: 1,
+            flags: 0,
+        };
+        let mut out = Vec::with_capacity(64);
+        if self.keepalive.seal(h, &[], &mut out).is_ok() {
+            let _ = sock.send_to(&out, self.addr);
+        }
+    }
+}
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -27,42 +65,27 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+/// Random 6-digit pairing code (uniform, rejection sampled).
+fn new_code() -> String {
+    loop {
+        let mut b = [0u8; 4];
+        getrandom::getrandom(&mut b).expect("random");
+        let v = u32::from_le_bytes(b);
+        if v < 4_000_000_000 {
+            return format!("{:06}", v % 1_000_000);
+        }
+    }
 }
 
-fn load_or_create_key(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
-    if let Ok(s) = std::fs::read_to_string(path) {
-        let s = s.trim();
-        if s.len() == 64 {
-            let mut k = [0u8; 32];
-            for i in 0..32 {
-                k[i] = u8::from_str_radix(&s[2 * i..2 * i + 2], 16)
-                    .map_err(|_| std::io::Error::other("key file is not hex"))?;
-            }
-            return Ok(k);
-        }
-        return Err(std::io::Error::other("key file must hold 64 hex chars"));
-    }
-    let mut k = [0u8; 32];
-    getrandom::getrandom(&mut k).map_err(std::io::Error::other)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
-        writeln!(f, "{}", hex(&k))?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(path, format!("{}\n", hex(&k)))?;
-    Ok(k)
+fn print_pairing(addr: SocketAddr, public: &[u8; 32], code: &str) {
+    println!("pairing code {code} (valid 2 minutes, one use)");
+    println!(
+        "pair: meshwav://pair?host={}&port={}&pk={}&code={code}",
+        addr.ip(),
+        addr.port(),
+        hex(public)
+    );
+    println!("or enter in the app: host={} port={} pk={} code={code}", addr.ip(), addr.port(), hex(public));
 }
 
 fn tailscale_ip() -> Option<String> {
@@ -138,14 +161,19 @@ fn main() {
             std::process::exit(2);
         }
     });
-    let key_path = arg(&args, "--key-file")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join(".config/meshwav/key")
-        });
-    let key = load_or_create_key(&key_path).unwrap_or_else(|e| {
-        eprintln!("key: {e}");
+    let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
+    let identity_path = arg(&args, "--identity").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("identity"));
+    let authorized_path = arg(&args, "--authorized").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("authorized_peers"));
+    if args.iter().any(|a| a == "--key-file") {
+        eprintln!("--key-file is gone: devices now pair with a one-time code (run with --pair)");
+        std::process::exit(2);
+    }
+    let identity = store::load_or_create_identity(&identity_path).unwrap_or_else(|e| {
+        eprintln!("identity: {e}");
+        std::process::exit(2);
+    });
+    let authorized = store::load_authorized(&authorized_path).unwrap_or_else(|e| {
+        eprintln!("authorized peers: {e}");
         std::process::exit(2);
     });
 
@@ -159,21 +187,43 @@ fn main() {
     }
     let sock = UdpSocket::bind(addr).expect("bind failed");
     println!("meshwav-agent listening on {addr}");
-    println!(
-        "pairing: host={} port={} key={}",
-        addr.ip(),
-        addr.port(),
-        hex(&key)
-    );
+    println!("agent public key: {}", hex(&identity.public));
+    println!("paired devices: {}", authorized.len());
+    let t0 = Instant::now();
+    let now_ms = move || t0.elapsed().as_millis() as u64;
+    let public = identity.public;
+    let server = Arc::new(Mutex::new(Server::new(identity, authorized)));
+    let open_window = {
+        let server = server.clone();
+        move || {
+            let code = new_code();
+            server.lock().unwrap().open_pairing(&code, now_ms());
+            print_pairing(addr, &public, &code);
+        }
+    };
+    if args.iter().any(|a| a == "--pair") {
+        open_window();
+    } else if server.lock().unwrap().authorized().is_empty() {
+        println!("no paired devices yet: restart with --pair, or type `pair` + Enter here");
+    }
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            match line {
+                Ok(l) if l.trim() == "pair" => open_window(),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
 
     let mut enc = OpusEncoder::new(frame_ms * 1000, kbps, false).expect("encoder");
     let frame_samples = enc.frame_samples();
 
-    let peer: Arc<Mutex<Option<(SocketAddr, Instant)>>> = Arc::new(Mutex::new(None));
+    let session: Arc<Mutex<Option<Session>>> = Arc::new(Mutex::new(None));
     {
-        let (sock, peer) = (sock.try_clone().unwrap(), peer.clone());
+        let (sock, session, server) = (sock.try_clone().unwrap(), session.clone(), server.clone());
+        let authorized_path = authorized_path.clone();
         std::thread::spawn(move || {
-            let mut opener = Opener::new(&key, Direction::ReceiverToAgent, STREAM_ID);
             let mut buf = [0u8; 2048];
             loop {
                 let Ok((n, from)) = sock.recv_from(&mut buf) else {
@@ -181,15 +231,61 @@ fn main() {
                     std::thread::sleep(Duration::from_millis(50));
                     continue;
                 };
-                if let Ok((h, _)) = opener.open(&buf[..n]) {
-                    if h.ptype == PacketType::Punch {
-                        let mut p = peer.lock().unwrap();
-                        if p.map(|(a, _)| a != from).unwrap_or(true) {
-                            println!("receiver connected: {from}");
+                let d = &buf[..n];
+                if handshake::is_handshake(d) {
+                    let out = server.lock().unwrap().handle(from, d, now_ms());
+                    match out {
+                        Outcome::Reply(r) => {
+                            let _ = sock.send_to(&r, from);
                         }
-                        *p = Some((from, Instant::now()));
+                        Outcome::Established { keys, peer, name, newly_paired } => {
+                            if newly_paired {
+                                let list = server.lock().unwrap().authorized().to_vec();
+                                if let Err(e) = store::save_authorized(&authorized_path, &list) {
+                                    eprintln!("could not save paired devices: {e}");
+                                }
+                            }
+                            let mut cur = session.lock().unwrap();
+                            // A device re-keying itself (network change, idle reconnect) is not news.
+                            let rekey = cur.as_ref().is_some_and(|s| s.peer == peer && s.last_seen.elapsed() < PEER_TIMEOUT);
+                            if newly_paired || !rekey {
+                                println!(
+                                    "{} '{name}' (key {}) connected from {from}",
+                                    if newly_paired { "paired new device" } else { "device" },
+                                    &hex(&peer)[..16]
+                                );
+                            }
+                            let mut s = Session {
+                                addr: from,
+                                peer,
+                                last_seen: Instant::now(),
+                                sealer: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, STREAM_ID, 0),
+                                keepalive: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, CONTROL_STREAM, 0),
+                                opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, STREAM_ID),
+                            };
+                            s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
+                            *cur = Some(s);
+                        }
+                        Outcome::Rejected(why) => eprintln!("handshake from {from} rejected: {why}"),
+                        Outcome::None => {}
+                    }
+                } else if let Some(s) = session.lock().unwrap().as_mut().filter(|s| s.addr == from) {
+                    if let Ok((h, _)) = s.opener.open(d) {
+                        if h.ptype == PacketType::Punch {
+                            s.last_seen = Instant::now();
+                        }
                     }
                 }
+            }
+        });
+    }
+
+    {
+        let (sock, session) = (sock.try_clone().unwrap(), session.clone());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(KEEPALIVE);
+            if let Some(s) = session.lock().unwrap().as_mut().filter(|s| s.last_seen.elapsed() < PEER_TIMEOUT) {
+                s.send_keepalive(&sock);
             }
         });
     }
@@ -221,7 +317,6 @@ fn main() {
         println!("capturing from {}", pinned.as_ref().unwrap());
     }
 
-    let mut sealer = Sealer::new(&key, Direction::AgentToReceiver, STREAM_ID, 0);
     let mut raw = vec![0u8; frame_samples * 4];
     let mut pcm = vec![0i16; frame_samples * 2];
     let mut out = Vec::with_capacity(1300);
@@ -261,18 +356,16 @@ fn main() {
                 continue 'outer;
             }
             ts = ts.wrapping_add(frame_samples as u32);
-            let target = match *peer.lock().unwrap() {
-                Some((a, seen)) if seen.elapsed() < PEER_TIMEOUT => Some(a),
-                _ => None,
-            };
-            match target {
+            let mut guard = session.lock().unwrap();
+            let mut exhausted = false;
+            match guard.as_mut().filter(|s| s.last_seen.elapsed() < PEER_TIMEOUT) {
                 None => {
                     if connected {
                         println!("receiver timed out; idle");
                         connected = false;
                     }
                 }
-                Some(to) => {
+                Some(sess) => {
                     connected = true;
                     for (i, c) in raw.chunks_exact(2).enumerate() {
                         pcm[i] = i16::from_le_bytes([c[0], c[1]]);
@@ -290,15 +383,21 @@ fn main() {
                         flags: 0,
                     };
                     out.clear();
-                    if sealer.seal(h, frame, &mut out).is_err() {
-                        eprintln!("sequence space exhausted; restart the agent to rekey");
-                        let _ = child.kill();
-                        break 'outer;
+                    if sess.sealer.seal(h, frame, &mut out).is_err() {
+                        exhausted = true;
+                    } else {
+                        let _ = sock.send_to(&out, sess.addr);
+                        sent += 1;
                     }
-                    let _ = sock.send_to(&out, to);
-                    sent += 1;
                 }
             }
+            if exhausted {
+                // The receiver reconnects on silence and gets fresh keys from a new handshake.
+                eprintln!("sequence space exhausted; dropping the session so the receiver rekeys");
+                *guard = None;
+                connected = false;
+            }
+            drop(guard);
             if last_report.elapsed() > Duration::from_secs(10) && connected {
                 println!("sent {sent} packets");
                 last_report = Instant::now();
