@@ -22,6 +22,11 @@ System audio content (may contain private material); control over the desktop's 
 | Audio sent to third parties | None: no analytics, no cloud calls; only tailnet peers. Documented and test-checked (no outbound to non-tailnet addresses). |
 | Downgrade | Version and codec set bound into the handshake transcript. |
 
+## Status after M4b
+Built and tested: Noise XX/XXpsk3 with pinned keys, pairing code (expiry, single use, lockout), per-session keys, bounded handshake state, 0600 key files, name sanitising.
+Not built yet: Tailscale `whois` allowlist, `revoke`/`status` commands (edit `authorized_peers` by hand for now), Keystore wrapping of the phone's key (it sits in app-private storage, backups disabled), version/codec binding beyond the fixed `meshwav-v1` prologue, Windows DPAPI.
+Known limits: the phone's X25519 uses BigInteger and is not constant-time (local-attacker only). Anyone on the tailnet who can reach the agent can burn the pairing attempts and force a 60 s lockout while a window is open. A capture of a legitimate message 3 gives no offline code-guessing oracle to a passive observer; an active impostor agent is stopped by the pinned agent key in the pairing line.
+
 ## Out of scope / residual risk
 Compromised endpoint; Tailscale account takeover (attacker adds a device, but still needs pairing/pinned key); traffic analysis of bitrate patterns.
 Recommendation in docs: add a Tailscale ACL limiting the agent port to the phone's tag/user.

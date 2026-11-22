@@ -11,10 +11,12 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Live counters shown in the UI. */
 object Stats {
     @Volatile var state = "Idle"
+    @Volatile var agentKey = ""
     @Volatile var received = 0L
     @Volatile var lost = 0L
     @Volatile var late = 0L
@@ -36,20 +38,29 @@ object Stats {
 
 /**
  * UDP receive -> adaptive jitter buffer -> Opus decode (+ concealment of lost frames) -> AudioTrack.
- * Frames are 10 ms (fixed for now; negotiated over the control channel later). The socket is
- * rebuilt automatically after a network change, send failures or prolonged silence.
+ * Every connection starts with a Noise handshake (pairing with a code the first time, pinned
+ * agent key afterwards) that yields fresh per-session keys. The socket and the session are
+ * rebuilt automatically after a network change, send failures or when the agent goes quiet.
  */
 class StreamReceiver(
     private val host: String,
     private val port: Int,
-    private val key: ByteArray,
+    private val identity: ByteArray,
+    private val agentPublic: ByteArray,
+    pairingCode: String?,
+    private val deviceName: String,
     private val context: Context? = null,
+    private val onPaired: (() -> Unit)? = null,
 ) {
     companion object {
         const val STREAM_ID = 1L
+        const val CONTROL_STREAM = 2L // agent keepalives; separate seq space so audio seq stays gap-free
         const val FRAME_MS = 10
-        const val SILENCE_REBIND_MS = 10_000L
+        const val AGENT_QUIET_REBIND_MS = 4_000L // no authentic packet at all (the agent sends keepalives every second)
+        const val PAIRING_ACK_MS = 8_000L
     }
+
+    private class Live(val keys: SessionKeys) { val punchSeq = AtomicLong(0) }
 
     private val running = AtomicBoolean(false)
     private val lock = Object()
@@ -57,16 +68,22 @@ class StreamReceiver(
     private val threads = java.util.Collections.synchronizedList(mutableListOf<Thread>())
     private val sockLock = Any()
     @Volatile private var socket: DatagramSocket? = null
+    @Volatile private var live: Live? = null
     @Volatile private var rebindReason: String? = null
+    @Volatile private var pairingCode: String? = pairingCode
+    @Volatile private var awaitingAck = pairingCode != null
+    @Volatile private var lastAlive = 0L
+    @Volatile private var ackDeadline = 0L
     private var netCb: ConnectivityManager.NetworkCallback? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
         Stats.reset(); Stats.state = "Connecting to $host:$port"
-        // Socket setup must not run on the main thread (StrictMode network policy), so do it here.
+        // Socket setup and the handshake must not run on the main thread (StrictMode network policy).
         threads += Thread {
             if (!openSocket()) { running.set(false); return@Thread }
             registerNetworkCallback()
+            if (!establish()) { running.set(false); return@Thread }
             threads += Thread(::recvLoop, "mw-recv").also { it.start() }
             threads += Thread(::punchLoop, "mw-punch").also { it.start() }
             threads += Thread(::playLoop, "mw-play").also { it.priority = Thread.MAX_PRIORITY; it.start() }
@@ -81,11 +98,20 @@ class StreamReceiver(
         val ts = synchronized(threads) { threads.toList() }
         ts.forEach { it.interrupt(); it.join(1000) }
         threads.clear()
+        live = null
         if (!Stats.state.contains("error", ignoreCase = true)) Stats.state = "Idle"
     }
 
-    /** Ask the receive thread to rebuild the socket (safe from any thread). */
+    /** Ask the receive thread to rebuild the socket and session (safe from any thread). */
     fun rebind(reason: String) { rebindReason = reason }
+
+    private fun fail(message: String) {
+        Stats.state = "Pairing error: $message"
+        running.set(false)
+        unregisterNetworkCallback()
+        socket?.close()
+        synchronized(lock) { lock.notifyAll() }
+    }
 
     private fun openSocket(): Boolean = synchronized(sockLock) {
         try {
@@ -99,6 +125,41 @@ class StreamReceiver(
             Stats.state = "Socket error: ${e.javaClass.simpleName}: ${e.message}"
             false
         }
+    }
+
+    /**
+     * Handshake until a session exists. A pairing code is used exactly once (retrying a wrong code
+     * would only burn the agent's attempt budget); with a pinned key we keep trying until the agent is up.
+     * Returns false when stopped or on a fatal error.
+     */
+    private fun establish(): Boolean {
+        while (running.get()) {
+            val s = socket ?: return false
+            val code = pairingCode
+            Stats.state = if (code != null) "Pairing with $host…" else "Connecting to $host:$port"
+            try {
+                val keys = Handshake.run(s, identity, agentPublic, code, deviceName) { running.get() }
+                pairingCode = null // consumed, whatever happens next
+                live = Live(keys)
+                lastAlive = SystemClock.elapsedRealtime()
+                ackDeadline = lastAlive + PAIRING_ACK_MS
+                Stats.agentKey = agentPublic.joinToString("") { "%02x".format(it) }.take(16)
+                Stats.state = if (awaitingAck) "Pairing…" else "Connected, waiting for audio"
+                return true
+            } catch (e: HandshakeException) {
+                if (!running.get()) return false
+                if (e.fatal || code != null) { pairingCode = null; fail(e.message ?: "handshake failed"); return false }
+                Stats.state = "Waiting for the agent (${e.message})"
+            } catch (e: java.io.IOException) {
+                if (!running.get()) return false
+                Stats.state = "Waiting for the agent (${e.javaClass.simpleName})"
+            } catch (e: Exception) {
+                fail("${e.javaClass.simpleName}: ${e.message}"); return false
+            }
+            try { Thread.sleep(1500) } catch (_: InterruptedException) { return false }
+            if (!openSocket()) try { Thread.sleep(1000) } catch (_: InterruptedException) { return false }
+        }
+        return false
     }
 
     private fun registerNetworkCallback() {
@@ -121,18 +182,18 @@ class StreamReceiver(
     }
 
     private fun punchLoop() {
-        // Seq must increase across app restarts (the agent keeps a replay window), so start from time.
-        var seq = (System.currentTimeMillis() / 100) and 0xFFFFFFFFL
         var n = 0
         var sendErrors = 0
         while (running.get()) {
-            try {
-                val d = Wire.seal(key, Wire.DIR_RECEIVER_TO_AGENT, STREAM_ID, seq, Wire.TYPE_PUNCH, 0, ByteArray(0))
-                socket?.send(DatagramPacket(d, d.size))
-                seq++
-                sendErrors = 0
-            } catch (_: Exception) {
-                if (++sendErrors >= 3) { rebind("send failed"); sendErrors = 0 }
+            val l = live
+            if (l != null) {
+                try {
+                    val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, STREAM_ID, l.punchSeq.getAndIncrement(), Wire.TYPE_PUNCH, 0, ByteArray(0))
+                    socket?.send(DatagramPacket(d, d.size))
+                    sendErrors = 0
+                } catch (_: Exception) {
+                    if (++sendErrors >= 3) { rebind("send failed"); sendErrors = 0 }
+                }
             }
             n++
             try { Thread.sleep(if (n < 5) 150L else 1000L) } catch (_: InterruptedException) { return }
@@ -142,7 +203,7 @@ class StreamReceiver(
     private fun recvLoop() {
         val buf = ByteArray(2048)
         val pkt = DatagramPacket(buf, buf.size)
-        var lastAudio = 0L
+        var lastAudio = SystemClock.elapsedRealtime()
         var errors = 0
         while (running.get()) {
             val why = rebindReason
@@ -150,21 +211,28 @@ class StreamReceiver(
                 rebindReason = null
                 Stats.reconnects++
                 Stats.state = "Reconnecting ($why)"
+                live = null
                 if (!openSocket()) {
                     rebindReason = why // network still down: retry shortly
                     try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
                     continue
                 }
+                if (!establish()) { running.set(false); return }
                 lastAudio = SystemClock.elapsedRealtime()
             }
             try {
                 socket?.receive(pkt)
                 errors = 0
             } catch (_: java.net.SocketTimeoutException) {
-                if (lastAudio != 0L) {
-                    val quiet = SystemClock.elapsedRealtime() - lastAudio
-                    if (quiet > 3000) Stats.state = "No audio from $host (is anything playing?)"
-                    if (quiet > SILENCE_REBIND_MS) { rebind("silence"); lastAudio = SystemClock.elapsedRealtime() }
+                val now = SystemClock.elapsedRealtime()
+                if (awaitingAck && now > ackDeadline) {
+                    pairingCode = null
+                    fail("no answer after pairing. The code was wrong or expired, or the agent is not in pairing mode.")
+                    return
+                }
+                if (!awaitingAck) {
+                    if (now - lastAlive > AGENT_QUIET_REBIND_MS) { rebind("agent not responding"); lastAlive = now }
+                    else if (now - lastAudio > 3000) Stats.state = "No audio from $host (is anything playing?)"
                 }
                 continue
             } catch (_: Exception) {
@@ -173,11 +241,21 @@ class StreamReceiver(
                 try { Thread.sleep(100) } catch (_: InterruptedException) { return }
                 continue
             }
-            val p = Wire.open(key, Wire.DIR_AGENT_TO_RECEIVER, STREAM_ID, buf, pkt.length) ?: continue
+            val l = live ?: continue
+            val p = Wire.open(l.keys.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, STREAM_ID, buf, pkt.length)
+                ?: Wire.open(l.keys.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, CONTROL_STREAM, buf, pkt.length)
+                ?: continue
+            val now = SystemClock.elapsedRealtime()
+            lastAlive = now
+            if (awaitingAck) {
+                awaitingAck = false
+                Stats.state = "Paired"
+                onPaired?.invoke()
+            }
             if (p.type != Wire.TYPE_AUDIO || p.fragCnt != 1) continue
-            lastAudio = SystemClock.elapsedRealtime()
+            lastAudio = now
             synchronized(lock) {
-                jb.push(p.seq, p.payload, lastAudio)
+                jb.push(p.seq, p.payload, now)
                 lock.notifyAll()
             }
         }

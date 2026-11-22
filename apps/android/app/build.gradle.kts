@@ -10,8 +10,8 @@ android {
         applicationId = "com.techhouseblr.meshwav"
         minSdk = 28 // ChaCha20-Poly1305 in javax.crypto
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
     buildTypes {
         release {
