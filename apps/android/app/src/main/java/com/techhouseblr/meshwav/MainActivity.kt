@@ -81,9 +81,15 @@ class MainActivity : Activity() {
         startForegroundService(Intent(this, PlaybackService::class.java).putExtra("host", t.host).putExtra("port", t.port).putExtra("key", t.key))
     }
 
+    private fun statsText(): String = with(Stats) {
+        "$state\nreceived $received  lost $lost  late $late  reordered $reordered  dup $duplicates\n" +
+            "buffer $bufferMs ms (target $targetMs ms)  jitter ${"%.1f".format(jitterMs)} ms\n" +
+            "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
+    }
+
     private fun tick() {
         button.text = if (PlaybackService.running) "Disconnect" else "Connect"
-        if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = "${Stats.state}\nreceived ${Stats.received}  lost ${Stats.lost}  buffer ${Stats.bufferMs} ms"
+        if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = statsText()
         ui.postDelayed(::tick, 500)
     }
 }
