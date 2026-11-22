@@ -3,7 +3,8 @@
 //! agent restart, wrong code, unpaired device, and a second pairing via the stdin command.
 use audio_protocol::crypto::{Direction, Opener, Sealer};
 use audio_protocol::handshake::*;
-use audio_protocol::packet::{Header, PacketType};
+use audio_protocol::control::Message;
+use audio_protocol::packet::{frame_ms_from_flags, Header, PacketType};
 use std::io::{BufRead, BufReader, Write};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -249,4 +250,176 @@ fn pin_mismatch_aborts_and_second_pairing_via_stdin() {
     let auth = authorized_file(&dir);
     assert!(auth.contains(&hex(&a.public)) && auth.contains(&hex(&b.public)), "{auth}");
     assert_eq!(agent.port, port);
+}
+
+enum Ev {
+    Audio { seq: u32, frame_ms: u32 },
+    Ctl(Message),
+}
+
+/// A receiver link: punches every 500 ms, can send control requests, reports what arrives.
+struct Link<'a> {
+    d: &'a Device,
+    audio: Opener,
+    ctl: Opener,
+    punch: Sealer,
+    req: Sealer,
+    next_punch: Instant,
+}
+
+impl<'a> Link<'a> {
+    fn new(d: &'a Device) -> Self {
+        Link {
+            d,
+            audio: Opener::new(&d.keys.to_receiver, Direction::AgentToReceiver, 1),
+            ctl: Opener::new(&d.keys.to_receiver, Direction::AgentToReceiver, 2),
+            punch: Sealer::new(&d.keys.to_agent, Direction::ReceiverToAgent, 1, 0),
+            req: Sealer::new(&d.keys.to_agent, Direction::ReceiverToAgent, 2, 0),
+            next_punch: Instant::now(),
+        }
+    }
+
+    fn send(&mut self, m: &Message) {
+        let h = Header { ptype: PacketType::Control, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
+        let mut out = Vec::new();
+        self.req.seal(h, &m.encode(), &mut out).unwrap();
+        self.d.sock.send(&out).unwrap();
+    }
+
+    /// Collect events for `ms` milliseconds.
+    fn pump(&mut self, ms: u64) -> Vec<Ev> {
+        let h = Header { ptype: PacketType::Punch, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
+        let end = Instant::now() + Duration::from_millis(ms);
+        let (mut evs, mut buf) = (vec![], [0u8; 2048]);
+        while Instant::now() < end {
+            if Instant::now() >= self.next_punch {
+                let mut out = Vec::new();
+                self.punch.seal(h, &[], &mut out).unwrap();
+                self.d.sock.send(&out).unwrap();
+                self.next_punch = Instant::now() + Duration::from_millis(500);
+            }
+            let Ok(n) = self.d.sock.recv(&mut buf) else { continue };
+            if let Ok((h, _)) = self.audio.open(&buf[..n]) {
+                if h.ptype == PacketType::Audio {
+                    evs.push(Ev::Audio { seq: h.seq, frame_ms: frame_ms_from_flags(h.flags) });
+                }
+            } else if let Ok((h, body)) = self.ctl.open(&buf[..n]) {
+                if h.ptype == PacketType::Control {
+                    evs.push(Ev::Ctl(Message::decode(&body).unwrap().unwrap().0));
+                }
+            }
+        }
+        evs
+    }
+
+    /// Send `m` (re-sending every 300 ms like the phone) until a reply for `req` arrives.
+    /// Returns the reply and the audio events that arrived after it.
+    fn request(&mut self, m: Message, req: u16) -> (Message, Vec<Ev>) {
+        for _ in 0..10 {
+            self.send(&m);
+            let mut evs = self.pump(300);
+            if let Some(i) = evs.iter().position(|e| matches!(e, Ev::Ctl(Message::ConfigApplied { req: r, .. } | Message::ConfigRejected { req: r, .. }) if *r == req)) {
+                let after = evs.split_off(i + 1);
+                let Some(Ev::Ctl(reply)) = evs.pop() else { unreachable!() };
+                return (reply, after);
+            }
+        }
+        panic!("no reply to request {req}");
+    }
+}
+
+fn frame_sizes(evs: &[Ev]) -> Vec<u32> {
+    evs.iter().filter_map(|e| if let Ev::Audio { frame_ms, .. } = e { Some(*frame_ms) } else { None }).collect()
+}
+
+fn seqs(evs: &[Ev]) -> Vec<u32> {
+    evs.iter().filter_map(|e| if let Ev::Audio { seq, .. } = e { Some(*seq) } else { None }).collect()
+}
+
+#[test]
+fn runtime_bitrate_and_frame_size_changes() {
+    let dir = workdir("config");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+
+    let evs = l.pump(1000);
+    assert!(frame_sizes(&evs).len() > 50 && frame_sizes(&evs).iter().all(|&f| f == 10), "default is 10 ms frames");
+    let mut last_seq = *seqs(&evs).last().unwrap();
+
+    // switch to 20 ms frames at 96 kbit/s
+    let (reply, after) = l.request(Message::SetConfig { req: 1, kbps: 96, frame_ms: 20 }, 1);
+    assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20 });
+    agent.wait_line("receiver set 96 kbit/s, 20 ms frames");
+    let mut evs = after;
+    evs.extend(l.pump(1000));
+    let fs = frame_sizes(&evs);
+    assert!(fs.len() > 20 && fs.iter().all(|&f| f == 20), "every packet after the ack announces 20 ms: {fs:?}");
+    assert!(fs.len() < 70, "20 ms frames mean about 50 packets per second, got {}", fs.len());
+    let sq = seqs(&evs);
+    assert!(sq.windows(2).all(|w| w[1] == w[0] + 1), "no gap in sequence numbers across the switch");
+    assert!(sq[0] > last_seq, "same session, same sequence space");
+    last_seq = *sq.last().unwrap();
+
+    // a repeated request id is answered again, not applied again
+    l.send(&Message::SetConfig { req: 1, kbps: 96, frame_ms: 20 });
+    let again = l.pump(600);
+    assert!(again.iter().any(|e| matches!(e, Ev::Ctl(Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20 }))), "reply replayed");
+
+    // out-of-range values are refused and change nothing
+    let (reply, after) = l.request(Message::SetConfig { req: 2, kbps: 999, frame_ms: 0 }, 2);
+    assert_eq!(reply, Message::ConfigRejected { req: 2, reason: audio_protocol::control::REJECT_BITRATE });
+    let (reply, _) = l.request(Message::SetConfig { req: 3, kbps: 0, frame_ms: 40 }, 3);
+    assert_eq!(reply, Message::ConfigRejected { req: 3, reason: audio_protocol::control::REJECT_FRAME });
+    let mut evs = after;
+    evs.extend(l.pump(500));
+    assert!(frame_sizes(&evs).iter().all(|&f| f == 20), "still 20 ms after rejected requests");
+
+    // bitrate only (0 keeps the frame size), then 5 ms frames (0 keeps the bitrate)
+    let (reply, _) = l.request(Message::SetConfig { req: 4, kbps: 200, frame_ms: 0 }, 4);
+    assert_eq!(reply, Message::ConfigApplied { req: 4, kbps: 200, frame_ms: 20 });
+    let (reply, after) = l.request(Message::SetConfig { req: 5, kbps: 0, frame_ms: 5 }, 5);
+    assert_eq!(reply, Message::ConfigApplied { req: 5, kbps: 200, frame_ms: 5 });
+    let mut evs = after;
+    evs.extend(l.pump(1000));
+    let fs = frame_sizes(&evs);
+    assert!(fs.len() > 100 && fs.iter().all(|&f| f == 5), "5 ms frames: {} packets", fs.len());
+    assert!(seqs(&evs)[0] > last_seq, "sequence numbers keep growing");
+}
+
+#[test]
+fn control_requests_from_an_unpaired_device_do_nothing() {
+    let dir = workdir("ctlauth");
+    let port = free_port();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let owner = dial(port, &Keypair::generate(), pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut lo = Link::new(&owner);
+    assert!(!lo.pump(500).is_empty());
+    // a stranger completes XX msg2 but is not authorised, and a forged request with a wrong key goes nowhere
+    let stranger = dial(port, &Keypair::generate(), pk, None, 2).unwrap();
+    let mut ls = Link::new(&stranger);
+    ls.send(&Message::SetConfig { req: 1, kbps: 64, frame_ms: 5 });
+    assert!(ls.pump(800).is_empty(), "stranger gets nothing, not even a rejection");
+    let fs = frame_sizes(&lo.pump(500));
+    assert!(fs.iter().all(|&f| f == 10), "owner's stream unchanged");
+}
+
+#[test]
+fn goodbye_stops_the_stream_at_once() {
+    let dir = workdir("bye");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+    assert!(!frame_sizes(&l.pump(500)).is_empty());
+    l.send(&Message::Bye { reason: 0 });
+    agent.wait_line("receiver said goodbye");
+    l.pump(100); // drain what was already in flight
+    assert!(frame_sizes(&l.pump(700)).is_empty(), "no audio after goodbye, even though punches keep arriving");
 }

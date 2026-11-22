@@ -31,6 +31,9 @@ class Concealer {
         return toBytes(s)
     }
 
+    /** Forget the last frame (the frame size changed, so it no longer fits). */
+    fun reset() { last = ShortArray(0); misses = 0 }
+
     /** Synthesize a frame for a lost packet. */
     fun conceal(fallbackBytes: Int): ByteArray {
         misses++

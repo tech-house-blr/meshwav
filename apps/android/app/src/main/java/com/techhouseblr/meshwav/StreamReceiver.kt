@@ -29,10 +29,14 @@ object Stats {
     @Volatile var bufferMs = 0
     @Volatile var targetMs = 0
     @Volatile var jitterMs = 0.0
+    @Volatile var kbps = 0          // 0 = not known yet
+    @Volatile var frameMs = 0
+    @Volatile var configNote = ""
 
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
+        kbps = 0; frameMs = 0; configNote = ""
     }
 }
 
@@ -55,16 +59,20 @@ class StreamReceiver(
     companion object {
         const val STREAM_ID = 1L
         const val CONTROL_STREAM = 2L // agent keepalives; separate seq space so audio seq stays gap-free
-        const val FRAME_MS = 10
+        const val FRAME_MS = 10 // initial; the agent announces the real size in every audio packet
         const val AGENT_QUIET_REBIND_MS = 4_000L // no authentic packet at all (the agent sends keepalives every second)
         const val PAIRING_ACK_MS = 8_000L
     }
 
-    private class Live(val keys: SessionKeys) { val punchSeq = AtomicLong(0) }
+    private class Live(val keys: SessionKeys) { val punchSeq = AtomicLong(0); val ctlSeq = AtomicLong(0) }
 
     private val running = AtomicBoolean(false)
     private val lock = Object()
-    private val jb = JitterBuffer(frameMs = FRAME_MS)
+    private var jb = JitterBuffer.forFrameMs(FRAME_MS)
+    private val cfg = ConfigClient()
+    // Counters of jitter buffers retired by a frame-size switch, so the totals keep growing.
+    private val base = LongArray(8)
+    @Volatile private var frameChanged = false
     private val threads = java.util.Collections.synchronizedList(mutableListOf<Thread>())
     private val sockLock = Any()
     @Volatile private var socket: DatagramSocket? = null
@@ -92,6 +100,7 @@ class StreamReceiver(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+        sayGoodbye()
         unregisterNetworkCallback()
         socket?.close()
         synchronized(lock) { lock.notifyAll() }
@@ -100,6 +109,23 @@ class StreamReceiver(
         threads.clear()
         live = null
         if (!Stats.state.contains("error", ignoreCase = true)) Stats.state = "Idle"
+    }
+
+    /** Tell the agent we are leaving so it restores the PC's audio output now. Sent 3 times (UDP), off the caller's thread. */
+    private fun sayGoodbye() {
+        val l = live ?: return
+        val sock = socket ?: return
+        val t = Thread {
+            try {
+                repeat(3) {
+                    val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ControlWire.encodeBye())
+                    sock.send(DatagramPacket(d, d.size))
+                    Thread.sleep(20)
+                }
+            } catch (_: Exception) {}
+        }
+        t.start()
+        t.join(300)
     }
 
     /** Ask the receive thread to rebuild the socket and session (safe from any thread). */
@@ -141,6 +167,7 @@ class StreamReceiver(
                 val keys = Handshake.run(s, identity, agentPublic, code, deviceName) { running.get() }
                 pairingCode = null // consumed, whatever happens next
                 live = Live(keys)
+                synchronized(cfg) { cfg.reset() }
                 lastAlive = SystemClock.elapsedRealtime()
                 ackDeadline = lastAlive + PAIRING_ACK_MS
                 Stats.agentKey = agentPublic.joinToString("") { "%02x".format(it) }.take(16)
@@ -181,22 +208,33 @@ class StreamReceiver(
         try { context?.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) } catch (_: Exception) {}
     }
 
+    /** Keepalive punches once a second (150 ms apart at first) plus the config exchange, ticking every 50 ms. */
     private fun punchLoop() {
         var n = 0
         var sendErrors = 0
+        var nextPunch = 0L
         while (running.get()) {
             val l = live
+            val now = SystemClock.elapsedRealtime()
             if (l != null) {
                 try {
-                    val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, STREAM_ID, l.punchSeq.getAndIncrement(), Wire.TYPE_PUNCH, 0, ByteArray(0))
-                    socket?.send(DatagramPacket(d, d.size))
+                    if (now >= nextPunch) {
+                        val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, STREAM_ID, l.punchSeq.getAndIncrement(), Wire.TYPE_PUNCH, 0, ByteArray(0))
+                        socket?.send(DatagramPacket(d, d.size))
+                        nextPunch = now + if (++n < 5) 150L else 1000L
+                    }
+                    val req = synchronized(cfg) { cfg.tick(now, Controls.desiredKbps, Controls.desiredFrameMs) }
+                    if (req != null) {
+                        val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, req)
+                        socket?.send(DatagramPacket(d, d.size))
+                    }
+                    synchronized(cfg) { Stats.kbps = cfg.appliedKbps; Stats.configNote = cfg.note ?: "" }
                     sendErrors = 0
                 } catch (_: Exception) {
                     if (++sendErrors >= 3) { rebind("send failed"); sendErrors = 0 }
                 }
             }
-            n++
-            try { Thread.sleep(if (n < 5) 150L else 1000L) } catch (_: InterruptedException) { return }
+            try { Thread.sleep(50) } catch (_: InterruptedException) { return }
         }
     }
 
@@ -205,6 +243,8 @@ class StreamReceiver(
         val pkt = DatagramPacket(buf, buf.size)
         var lastAudio = SystemClock.elapsedRealtime()
         var errors = 0
+        var candidateMs = 0
+        var candidateCount = 0
         while (running.get()) {
             val why = rebindReason
             if (why != null) {
@@ -252,12 +292,24 @@ class StreamReceiver(
                 Stats.state = "Paired"
                 onPaired?.invoke()
             }
+            if (p.type == Wire.TYPE_CONTROL) {
+                ControlWire.decode(p.payload)?.let { m -> synchronized(cfg) { cfg.onMessage(m) } }
+                continue
+            }
             if (p.type != Wire.TYPE_AUDIO || p.fragCnt != 1) continue
             lastAudio = now
+            val ms = ControlWire.frameMsFromFlags(p.flags)
             synchronized(lock) {
+                // A switch needs 3 packets in a row announcing the new size, so a straggler of the old size
+                // that arrives late (reordering across the switch) cannot make the buffer flap back and forth.
+                if (ms != 0 && ms != jb.frameMs) {
+                    if (ms == candidateMs) candidateCount++ else { candidateMs = ms; candidateCount = 1 }
+                    if (candidateCount >= 3) { switchFrameSize(ms); candidateMs = 0; candidateCount = 0 }
+                } else candidateCount = 0
                 jb.push(p.seq, p.payload, now)
                 lock.notifyAll()
             }
+            if (ms != 0) synchronized(cfg) { cfg.frameSeen(ms); Stats.frameMs = ms }
         }
     }
 
@@ -274,11 +326,20 @@ class StreamReceiver(
         return track
     }
 
+    /** The agent changed its frame size: start a fresh buffer sized for it, keeping the running totals. Caller holds [lock]. */
+    private fun switchFrameSize(ms: Int) {
+        val o = jb
+        base[0] += o.received; base[1] += o.lost; base[2] += o.late; base[3] += o.duplicates
+        base[4] += o.reordered; base[5] += o.trimmed; base[6] += o.underruns; base[7] += o.resyncs
+        jb = JitterBuffer.forFrameMs(ms)
+        frameChanged = true
+    }
+
     private fun publishStats() {
-        Stats.received = jb.received; Stats.lost = jb.lost; Stats.late = jb.late
-        Stats.duplicates = jb.duplicates; Stats.reordered = jb.reordered; Stats.trimmed = jb.trimmed
-        Stats.underruns = jb.underruns; Stats.resyncs = jb.resyncs
-        Stats.bufferMs = jb.depthFrames * FRAME_MS; Stats.targetMs = jb.targetFrames * FRAME_MS
+        Stats.received = base[0] + jb.received; Stats.lost = base[1] + jb.lost; Stats.late = base[2] + jb.late
+        Stats.duplicates = base[3] + jb.duplicates; Stats.reordered = base[4] + jb.reordered; Stats.trimmed = base[5] + jb.trimmed
+        Stats.underruns = base[6] + jb.underruns; Stats.resyncs = base[7] + jb.resyncs
+        Stats.bufferMs = jb.depthFrames * jb.frameMs; Stats.targetMs = jb.targetFrames * jb.frameMs
         Stats.jitterMs = jb.jitterMs
     }
 
@@ -293,18 +354,20 @@ class StreamReceiver(
             return
         }
         val concealer = Concealer()
-        val frameBytes = 48 * FRAME_MS * 4
         try {
             while (running.get()) {
                 var out: JitterBuffer.Out
+                var frameMs: Int
                 synchronized(lock) {
+                    if (frameChanged) { frameChanged = false; concealer.reset() }
                     out = jb.pop(SystemClock.elapsedRealtime())
+                    frameMs = jb.frameMs
                     if (out.kind == JitterBuffer.Kind.WAIT) lock.wait(3)
                     publishStats()
                 }
                 val pcm = when (out.kind) {
-                    JitterBuffer.Kind.FRAME -> concealer.accept(decoder.decode(out.payload!!, FRAME_MS * 1000L))
-                    JitterBuffer.Kind.LOST -> concealer.conceal(frameBytes)
+                    JitterBuffer.Kind.FRAME -> concealer.accept(decoder.decode(out.payload!!, frameMs * 1000L))
+                    JitterBuffer.Kind.LOST -> concealer.conceal(48 * frameMs * 4)
                     JitterBuffer.Kind.WAIT -> continue
                 }
                 if (pcm.isNotEmpty()) {

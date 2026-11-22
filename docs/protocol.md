@@ -13,6 +13,10 @@ Deviations from the original design below, made for the first integration: the h
 - Session keys are the two raw Noise split outputs: initiator-to-responder protects receiver-to-agent packets, the other protects agent-to-receiver. Keys are fresh per handshake, sequence numbers restart at 0.
 - Agent keepalive: an empty sealed `Punch` on stream id 2 (own nonce space, so audio `seq` stays gap-free) right after the handshake and then every second. It confirms pairing to the phone and tells it the agent is alive even when nothing is playing. The receiver re-handshakes after 4 s without any authentic packet.
 - Agent policy: XX only for authorized keys; XXpsk3 only while a pairing window is open (2 min, single use, 5 failed codes then 60 s lockout, no reply while closed or locked). At most 16 pending handshakes, 5 s TTL, 30 msg1 per second.
+- Control packets: packet type 4 (`Control`), sealed on stream id 2 in both directions (own nonce and sequence space, so audio `seq` stays gap-free). The body is one control message in the framing of section 1 (`u16 length | u8 type | body`).
+- Runtime config (implemented): `SetConfig{req:u16, kbps:u32, frame_ms:u8}` (type 11, receiver to agent; 0 means keep the current value), answered by `ConfigApplied{req, kbps, frame_ms}` (12) or `ConfigRejected{req, reason}` (13; 1 bitrate, 2 frame size, 3 encoder). Accepted range: 64-256 kbit/s, frames of 5, 10 or 20 ms. The receiver repeats a request every 300 ms (at most 8 times) with the same `req`; the agent applies a request once, between two frames, and replays its stored answer for a repeated `req`. Values persist for the agent process, across sessions. After a reconnect the receiver asks again for what the user chose.
+- Frame size on the wire: bits 2-4 of the audio header `flags` carry `frame_ms / 5` (1, 2 or 4). The receiver follows what the packets say, so it never depends on a control message arriving. It switches its jitter buffer after 3 consecutive packets announcing the new size (stragglers of the old size cannot flap it) and keeps the same 20 ms floor (never below 2 frames) and 200 ms cap.
+- Switching the frame size flushes the receiver's jitter buffer, which costs a short audible gap; changing only the bitrate does not.
 - Agent files (0600): `~/.config/meshwav/identity` (private key, hex) and `authorized_peers` (`<public key> <name>` per line).
 
 ## 1. Control channel (TCP, default port 47800)
@@ -78,3 +82,11 @@ Target depth configurable (default 20 ms Opus, 40 ms lossless). Adaptive: grows 
 
 ## 5. Test vectors
 docs/vectors/ (added in M1): fixed key/nonce/packets so Rust and Kotlin parsers are tested against identical bytes.
+
+## Audio redirection (agent, Linux)
+
+By default the agent captures a virtual sink instead of a physical output's monitor. On start it creates a null sink named `meshwav` ("Meshwav" in sound settings; creating it changes nothing audible) and captures `meshwav.monitor`. While a receiver is connected it makes `meshwav` the default output and moves every playing stream onto it, so the PC plays nothing locally; IEMs, speakers and HDMI can be plugged and unplugged freely. If a device grabs the default while redirected, the agent takes it back and remembers that device as the one to restore. Streams started on a specific device are moved within about 0.5 s.
+
+The previous output is restored, and streams moved back, 15 s after the receiver goes away (so a network blip does not flip the output) and on SIGINT/SIGTERM or a panic; the virtual sink is removed on exit. If the saved output no longer exists, any other real sink is used. The output to restore is written to `~/.config/meshwav/redirect.state` while redirected, so a run that was killed (SIGKILL, power loss) is undone on the next start. The receiver also sends a sealed control `Bye` when the user disconnects (3 copies); the agent then stops sending, ignores that session's packets and restores the output immediately, with no grace period. The grace period still covers silent drops such as a lost network. Volume and mute of physical sinks are never changed. `--no-redirect`, or pinning a capture with `--source`, turns this off and keeps the old behavior (the PC keeps playing locally).
+
+Known limits: this relies on `pactl` (PulseAudio or PipeWire-pulse); a desktop's stream-restore may remember moved streams, so an app might open on the Meshwav sink after the agent is gone only if the sink still exists (it is removed on a clean exit).

@@ -37,3 +37,10 @@ Findings:
 - Kotlin: 10 JVM tests (RFC 7748 X25519 vectors, XX and XXpsk3 byte-identical to the Rust vectors, pin mismatch, tampering, framing).
 - Interop: the Kotlin `Handshake.run` (JVM, on liberation) paired with the real Rust agent over 127.0.0.1, received gap-free audio plus keepalives, reconnected with the pinned key only, was refused with a wrong pin, an unpaired key got no audio, and the used code got no reply.
 - Not measured: handshake time on the phone (BigInteger X25519 is slower than native), behaviour over a real tailnet path, and the phone UI flow (a hands-on check is pending).
+
+## M4b: runtime config (verified, loopback only)
+
+- Rust: 6 agent unit tests for the request policy (range checks, replay of a repeated request id, supersede, encoder failure), and 2 more end-to-end tests with the real agent binary and a fake `parec`: 10 to 20 ms frames and 96 kbit/s, a repeated request replayed not re-applied, out-of-range bitrate and frame size refused with no change, bitrate-only and 5 ms switches with `0` meaning keep, sequence numbers gap-free and growing across every switch, a stranger's request gets no reply at all.
+- Kotlin: 10 tests (wire bytes identical to the Rust literals, strict decoding, retry, give-up, refusal, stale reply, new session) and 3 jitter buffer tests at 5, 10 and 20 ms (clean link: no concealment; 3% loss: concealed frames within 2-6% of the frames sent; depth never above 200 ms).
+- Interop: the Kotlin code, run on liberation, switched the real Rust agent to 96 kbit/s and 20 ms frames, saw them announced in the audio flags, and got a refusal for 999 kbit/s.
+- Not measured: how smooth the switch sounds on the phone (the jitter buffer is flushed on a frame-size change), and whether 5 ms frames hold up over Wi-Fi (more than 200 packets per second). Latency at each frame size is M4c work.

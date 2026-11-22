@@ -11,6 +11,7 @@ object Wire {
     const val TAG_LEN = 16
     const val TYPE_AUDIO = 1
     const val TYPE_PUNCH = 2
+    const val TYPE_CONTROL = 4
     const val DIR_AGENT_TO_RECEIVER = 0
     const val DIR_RECEIVER_TO_AGENT = 1
 

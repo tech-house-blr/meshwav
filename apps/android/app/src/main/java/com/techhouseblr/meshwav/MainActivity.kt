@@ -12,6 +12,11 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -59,6 +64,18 @@ class MainActivity : Activity() {
         root.addView(pairing)
         pairedInfo = TextView(this).apply { setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, 0); setOnLongClickListener { store.forget(); true } }
         root.addView(pairedInfo)
+        val prefs = getSharedPreferences("mw", MODE_PRIVATE)
+        Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
+        Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
+        root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })
+        root.addView(choice("Bitrate", listOf("Agent default") + Controls.kbpsChoices.map { "$it kbit/s" }, Controls.kbpsChoices.indexOf(Controls.desiredKbps) + 1) { i ->
+            Controls.desiredKbps = if (i == 0) 0 else Controls.kbpsChoices[i - 1]
+            prefs.edit().putInt("kbps", Controls.desiredKbps).apply()
+        })
+        root.addView(choice("Frame size", listOf("Agent default") + Controls.frameChoices.map { "$it ms" }, Controls.frameChoices.indexOf(Controls.desiredFrameMs) + 1) { i ->
+            Controls.desiredFrameMs = if (i == 0) 0 else Controls.frameChoices[i - 1]
+            prefs.edit().putInt("frame_ms", Controls.desiredFrameMs).apply()
+        })
         button = Button(this).apply { setOnClickListener { toggle() } }
         root.addView(button, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
         status = TextView(this).apply { setTextColor(Color.parseColor("#7fd1ae")); textSize = 16f; gravity = Gravity.START; setPadding(0, pad, 0, 0) }
@@ -98,8 +115,31 @@ class MainActivity : Activity() {
         startForegroundService(svc)
     }
 
+    /** A labelled drop-down. [onPick] fires only for user changes, not for the initial selection. */
+    private fun choice(label: String, items: List<String>, selected: Int, onPick: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, -2, 1f))
+        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, items) {
+            override fun getView(position: Int, v: View?, parent: ViewGroup): View = super.getView(position, v, parent).also { (it as TextView).setTextColor(Color.WHITE) }
+        }
+        val sp = Spinner(this).apply { this.adapter = adapter; setSelection(selected, false) }
+        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            var first = true
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { if (first) { first = false; return }; onPick(pos) }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        row.addView(sp, LinearLayout.LayoutParams(0, -2, 1f))
+        return row
+    }
+
+    private fun encoderText(): String = with(Stats) {
+        val k = if (kbps > 0) "$kbps kbit/s" else "bitrate: agent default"
+        val f = if (frameMs > 0) "$frameMs ms frames" else "frame size unknown"
+        "encoder $k, $f" + if (configNote.isNotEmpty()) "  ($configNote)" else ""
+    }
+
     private fun statsText(): String = with(Stats) {
-        "$state\nreceived $received  lost $lost  late $late  reordered $reordered  dup $duplicates\n" +
+        "$state\n${encoderText()}\nreceived $received  lost $lost  late $late  reordered $reordered  dup $duplicates\n" +
             "buffer $bufferMs ms (target $targetMs ms)  jitter ${"%.1f".format(jitterMs)} ms\n" +
             "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
     }

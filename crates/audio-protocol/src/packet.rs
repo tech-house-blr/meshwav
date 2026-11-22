@@ -12,6 +12,29 @@ pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_LEN - TAG_LEN;
 
 pub const FLAG_KEYFRAME: u16 = 1 << 0;
 pub const FLAG_SILENCE: u16 = 1 << 1;
+/// Bits 2..=4 of `flags` carry the frame duration of an audio packet as `frame_ms / 5`
+/// (1 = 5 ms, 2 = 10 ms, 4 = 20 ms). The receiver follows it, so a runtime frame-size switch
+/// needs no extra synchronisation and survives a lost control message. 0 = not stated.
+pub const FLAG_FRAME_SHIFT: u16 = 2;
+pub const FLAG_FRAME_MASK: u16 = 0b111 << FLAG_FRAME_SHIFT;
+
+/// Flag bits announcing `frame_ms` (5, 10 or 20); 0 for anything else.
+pub fn frame_flags(frame_ms: u32) -> u16 {
+    match frame_ms {
+        5 | 10 | 20 => ((frame_ms / 5) as u16) << FLAG_FRAME_SHIFT,
+        _ => 0,
+    }
+}
+
+/// Frame duration announced by `flags` (5, 10 or 20), or 0 if absent or invalid.
+pub fn frame_ms_from_flags(flags: u16) -> u32 {
+    match (flags & FLAG_FRAME_MASK) >> FLAG_FRAME_SHIFT {
+        1 => 5,
+        2 => 10,
+        4 => 20,
+        _ => 0,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -19,6 +42,8 @@ pub enum PacketType {
     Audio = 1,
     Punch = 2,
     Parity = 3,
+    /// Sealed control message (see `control::Message`), on stream id 2 in both directions.
+    Control = 4,
 }
 
 impl PacketType {
@@ -27,6 +52,7 @@ impl PacketType {
             1 => Ok(Self::Audio),
             2 => Ok(Self::Punch),
             3 => Ok(Self::Parity),
+            4 => Ok(Self::Control),
             x => Err(ProtocolError::BadType(x)),
         }
     }

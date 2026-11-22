@@ -22,6 +22,9 @@ class JitterBuffer(
     class Out(val kind: Kind, val payload: ByteArray? = null)
 
     companion object {
+        /** Same 20 ms floor and 200 ms hard cap for every frame size. */
+        fun forFrameMs(ms: Int) = JitterBuffer(frameMs = ms, minFrames = maxOf(2, (20 + ms - 1) / ms), maxFrames = 200 / ms)
+
         const val RESYNC_GAP = 1000L      // sequence jump this large means the sender restarted
         const val REBUFFER_MS = 150L      // empty this long => underrun, rebuffer
         const val SHRINK_EVERY_MS = 1000L // target shrinks at most one frame per second
