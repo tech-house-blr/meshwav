@@ -28,7 +28,7 @@ Receiver sends an authenticated UDP "punch" packet (type 0x02, AEAD-sealed) so t
 ```
  0       1       2       3
 +-------+-------+-------+-------+
-| magic 'T''A'  | ver=1 | type  |   type: 1=audio 2=punch 3=parity
+| magic 'M''W'  | ver=1 | type  |   type: 1=audio 2=punch 3=parity
 +-------+-------+-------+-------+
 |          stream_id (u32)      |
 +-------+-------+-------+-------+

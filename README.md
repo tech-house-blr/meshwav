@@ -1,4 +1,4 @@
-# Tailnet Audio
+# Meshwav
 
 Private, low-latency system-audio streaming from a computer to an Android phone over Tailscale.
 No cloud, no relay servers, no third-party services.
