@@ -1,0 +1,65 @@
+package com.techhouseblr.meshwav
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.net.wifi.WifiManager
+import android.os.IBinder
+import android.os.PowerManager
+
+class PlaybackService : Service() {
+    companion object {
+        const val ACTION_STOP = "stop"
+        const val CHANNEL = "playback"
+        @Volatile var running = false
+    }
+
+    private var receiver: StreamReceiver? = null
+    private var wake: PowerManager.WakeLock? = null
+    private var wifi: WifiManager.WifiLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        CrashLog.install(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) { teardown(); return START_NOT_STICKY }
+        val host = intent?.getStringExtra("host") ?: ""
+        val port = intent?.getIntExtra("port", 47900) ?: 47900
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Playback", NotificationManager.IMPORTANCE_LOW))
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val stop = PendingIntent.getService(this, 1, Intent(this, PlaybackService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
+        val n = Notification.Builder(this, CHANNEL)
+            .setContentTitle("Meshwav").setContentText("Streaming from $host")
+            .setSmallIcon(android.R.drawable.ic_media_play).setContentIntent(open)
+            .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause), "Stop", stop).build())
+            .setOngoing(true).build()
+        startForeground(1, n)
+        val key = try { Wire.hex(intent?.getStringExtra("key") ?: "") } catch (e: Exception) { Stats.state = "Bad key"; teardown(); return START_NOT_STICKY }
+        if (host.isEmpty()) { teardown(); return START_NOT_STICKY }
+        wake = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "meshwav:play").apply { acquire() }
+        wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "meshwav:wifi").apply { acquire() }
+        receiver?.stop()
+        receiver = StreamReceiver(host, port, key).also { it.start() }
+        running = true
+        return START_NOT_STICKY
+    }
+
+    private fun teardown() {
+        receiver?.stop(); receiver = null
+        wake?.let { if (it.isHeld) it.release() }; wifi?.let { if (it.isHeld) it.release() }
+        running = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() { teardown(); super.onDestroy() }
+}
