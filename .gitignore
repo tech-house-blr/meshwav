@@ -1,0 +1,6 @@
+target/
+*.log
+.idea/
+apps/android/build/
+apps/android/.gradle/
+local.properties
