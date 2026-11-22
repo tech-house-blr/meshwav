@@ -2,13 +2,18 @@
 //! that most recently completed a Noise handshake. The receiver keeps the session alive with
 //! sealed `Punch` packets about once a second; the agent stops sending after `PEER_TIMEOUT`.
 //!
-//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--kbps 160] [--frame-ms 10]
+//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10]
+//!
+//! Redirect (default): while a receiver is connected, the default output becomes a virtual "Meshwav"
+//! sink and every stream is moved onto it, so the PC plays nothing locally. The previous output is
+//! restored 15 s after the receiver goes away and on exit. `--no-redirect` or `--source` turn it off.
 //!
 //! Pairing: `--pair` (or typing `pair` on stdin) opens a 2-minute window with a 6-digit code.
 //! Defaults: bind = <tailscale ipv4>:47900, identity = ~/.config/meshwav/identity and paired
 //! devices = ~/.config/meshwav/authorized_peers (both 0600, created on first use). The listener
 //! refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
 //! PipeWire-pulse) on the default sink's monitor.
+mod redirect;
 mod store;
 
 use audio_codec::opus::OpusEncoder;
@@ -22,7 +27,25 @@ use std::io::{BufRead, Read};
 use std::net::{SocketAddr, UdpSocket};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// Restores the audio output when main unwinds or returns (not on `process::exit`).
+struct RedirectGuard(Arc<Mutex<redirect::Redirect<redirect::Pactl>>>);
+
+impl Drop for RedirectGuard {
+    fn drop(&mut self) {
+        if let Ok(mut r) = self.0.lock() {
+            r.shutdown();
+        }
+    }
+}
 
 const STREAM_ID: u32 = 1;
 /// Keepalives use their own stream id (own nonce/seq space) so audio sequence numbers stay gap-free.
@@ -361,7 +384,34 @@ fn main() {
         });
     }
 
-    let pinned = arg(&args, "--source");
+    let want_redirect = !args.iter().any(|a| a == "--no-redirect") && arg(&args, "--source").is_none();
+    let redirect = Arc::new(Mutex::new(redirect::Redirect::new(redirect::Pactl, Some(cfg_dir.join("redirect.state")))));
+    let redirect_on = want_redirect
+        && match redirect.lock().unwrap().start() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("redirect unavailable ({e}); capturing without it");
+                false
+            }
+        };
+    let _guard = redirect_on.then(|| RedirectGuard(redirect.clone()));
+    unsafe {
+        libc::signal(libc::SIGINT, on_signal as *const () as usize);
+        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
+    }
+    if redirect_on {
+        let (redirect, session) = (redirect.clone(), session.clone());
+        std::thread::spawn(move || loop {
+            if STOP.load(Ordering::SeqCst) {
+                redirect.lock().unwrap().shutdown();
+                std::process::exit(0);
+            }
+            let connected = session.lock().unwrap().as_ref().is_some_and(|s| s.last_seen.elapsed() < PEER_TIMEOUT);
+            redirect.lock().unwrap().tick(connected, Instant::now());
+            std::thread::sleep(Duration::from_millis(500));
+        });
+    }
+    let pinned = if redirect_on { Some(redirect::MONITOR.to_string()) } else { arg(&args, "--source") };
     let current: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(pinned.clone()));
     let child_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     if pinned.is_none() {

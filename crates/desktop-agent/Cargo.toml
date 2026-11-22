@@ -15,3 +15,4 @@ audio-protocol = { path = "../audio-protocol" }
 audio-codec = { path = "../audio-codec" }
 audio-transport = { path = "../audio-transport" }
 getrandom = { version = "0.2", features = ["std"] }
+libc = "0.2"
