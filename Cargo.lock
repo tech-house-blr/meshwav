@@ -31,6 +31,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio-transport"
+version = "0.1.0"
+dependencies = [
+ "audio-protocol",
+]
+
+[[package]]
 name = "audiopus"
 version = "0.3.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
