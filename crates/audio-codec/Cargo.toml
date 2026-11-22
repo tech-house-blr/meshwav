@@ -1,0 +1,13 @@
+[package]
+name = "audio-codec"
+description = "Meshwav codecs: Opus, FLAC (stateless frames) and PCM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+audiopus = "0.3.0-rc.0"
+flacenc = "0.5"
+claxon = "0.4"
+thiserror.workspace = true

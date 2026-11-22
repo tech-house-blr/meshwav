@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/audio-protocol"]  # more crates are added as each milestone lands
+members = ["crates/audio-protocol", "crates/audio-codec"]  # more crates are added as each milestone lands
 
 [workspace.package]
 version = "0.1.0"
