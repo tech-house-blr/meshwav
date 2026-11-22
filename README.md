@@ -10,3 +10,5 @@ Status: architecture phase (see docs/). Implementation proceeds milestone by mil
 - docs/security.md: threat model and assumptions
 - docs/risks.md: technical risks and mitigations
 - docs/milestones.md: MVP plan
+
+License: Apache-2.0. Part of the Mesh family (with Mesh Pilot), by Tech House BLR.
