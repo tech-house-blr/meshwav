@@ -177,6 +177,8 @@ fn main() {
             let mut buf = [0u8; 2048];
             loop {
                 let Ok((n, from)) = sock.recv_from(&mut buf) else {
+                    // e.g. ICMP unreachable after a receiver vanished; never spin
+                    std::thread::sleep(Duration::from_millis(50));
                     continue;
                 };
                 if let Ok((h, _)) = opener.open(&buf[..n]) {
@@ -254,6 +256,8 @@ fn main() {
                     eprintln!("capture stream ended");
                     break 'outer;
                 }
+                // Source vanished or was switched: back off so a dead sink cannot cause a respawn storm.
+                std::thread::sleep(Duration::from_millis(250));
                 continue 'outer;
             }
             ts = ts.wrapping_add(frame_samples as u32);

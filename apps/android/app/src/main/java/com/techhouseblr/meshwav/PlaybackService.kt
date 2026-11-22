@@ -48,7 +48,7 @@ class PlaybackService : Service() {
         wake = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "meshwav:play").apply { acquire() }
         wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "meshwav:wifi").apply { acquire() }
         receiver?.stop()
-        receiver = StreamReceiver(host, port, key).also { it.start() }
+        receiver = StreamReceiver(host, port, key, applicationContext).also { it.start() }
         running = true
         return START_NOT_STICKY
     }
