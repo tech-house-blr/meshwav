@@ -8,6 +8,10 @@ class ControlTest {
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
 
     // Same literals as the Rust test runtime_config_messages_have_fixed_wire_bytes.
+    @Test fun byeIsTwoBytesOfBodyAndMatchesRust() {
+        assertEquals("00020900", ControlWire.encodeBye().hex())
+    }
+
     @Test fun encodesTheRustBytes() {
         assertEquals("00080b00070000008014", ControlWire.encodeSetConfig(7, 128, 20).hex())
     }

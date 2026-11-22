@@ -31,6 +31,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Set when the receiver says goodbye, so the redirect is undone right away instead of after the grace period.
+static BYE: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
@@ -66,6 +68,8 @@ struct Session {
     /// Receiver-to-agent control packets (own stream id, own nonce space).
     ctl_opener: Opener,
     ctl: ControlState,
+    /// The receiver said goodbye: ignore its packets until a new handshake replaces this session.
+    closed: bool,
 }
 
 /// Runtime configuration requests from the receiver. Pure state, so the policy is unit-testable.
@@ -347,6 +351,7 @@ fn main() {
                                 opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, STREAM_ID),
                                 ctl_opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, CONTROL_STREAM),
                                 ctl: ControlState::default(),
+                                closed: false,
                             };
                             s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
                             *cur = Some(s);
@@ -356,14 +361,25 @@ fn main() {
                     }
                 } else if let Some(s) = session.lock().unwrap().as_mut().filter(|s| s.addr == from) {
                     if let Ok((h, _)) = s.opener.open(d) {
-                        if h.ptype == PacketType::Punch {
+                        if h.ptype == PacketType::Punch && !s.closed {
                             s.last_seen = Instant::now();
                         }
                     } else if let Ok((h, body)) = s.ctl_opener.open(d) {
-                        s.last_seen = Instant::now();
+                        if !s.closed {
+                            s.last_seen = Instant::now();
+                        }
                         if h.ptype == PacketType::Control {
                             if let Ok(Some((msg, _))) = Message::decode(&body) {
-                                if let Some(reply) = s.ctl.on_message(msg) {
+                                if matches!(msg, Message::Bye { .. }) {
+                                    // Sealed, so only the paired device can send it. Stop sending now.
+                                    s.closed = true;
+                                    if let Some(t) = Instant::now().checked_sub(PEER_TIMEOUT * 2) {
+                                        s.last_seen = t;
+                                    }
+                                    BYE.store(true, Ordering::SeqCst);
+                                    println!("receiver said goodbye");
+                                } else if s.closed {
+                                } else if let Some(reply) = s.ctl.on_message(msg) {
                                     s.send_control(&reply, &sock);
                                 }
                             }
@@ -407,6 +423,9 @@ fn main() {
                 std::process::exit(0);
             }
             let connected = session.lock().unwrap().as_ref().is_some_and(|s| s.last_seen.elapsed() < PEER_TIMEOUT);
+            if BYE.swap(false, Ordering::SeqCst) {
+                redirect.lock().unwrap().release();
+            }
             redirect.lock().unwrap().tick(connected, Instant::now());
             std::thread::sleep(Duration::from_millis(500));
         });

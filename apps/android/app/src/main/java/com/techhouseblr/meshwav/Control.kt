@@ -12,6 +12,7 @@ object Controls {
 
 /** Control messages (docs/protocol.md section 0), same framing as the Rust side: `u16 len | u8 type | body`. */
 object ControlWire {
+    const val TYPE_BYE = 9
     const val TYPE_SET_CONFIG = 11
     const val TYPE_CONFIG_APPLIED = 12
     const val TYPE_CONFIG_REJECTED = 13
@@ -26,6 +27,9 @@ object ControlWire {
         data class Applied(val req: Int, val kbps: Int, val frameMs: Int) : Msg()
         data class Rejected(val req: Int, val reason: Int) : Msg()
     }
+
+    /** Goodbye: tells the agent to stop and give the PC's audio output back at once. */
+    fun encodeBye(): ByteArray = ByteBuffer.allocate(4).putShort(2).put(TYPE_BYE.toByte()).put(0).array()
 
     fun encodeSetConfig(req: Int, kbps: Int, frameMs: Int): ByteArray {
         val b = ByteBuffer.allocate(2 + 1 + 2 + 4 + 1)

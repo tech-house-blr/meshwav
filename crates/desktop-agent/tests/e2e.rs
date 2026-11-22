@@ -407,3 +407,19 @@ fn control_requests_from_an_unpaired_device_do_nothing() {
     let fs = frame_sizes(&lo.pump(500));
     assert!(fs.iter().all(|&f| f == 10), "owner's stream unchanged");
 }
+
+#[test]
+fn goodbye_stops_the_stream_at_once() {
+    let dir = workdir("bye");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+    assert!(!frame_sizes(&l.pump(500)).is_empty());
+    l.send(&Message::Bye { reason: 0 });
+    agent.wait_line("receiver said goodbye");
+    l.pump(100); // drain what was already in flight
+    assert!(frame_sizes(&l.pump(700)).is_empty(), "no audio after goodbye, even though punches keep arriving");
+}

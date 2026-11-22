@@ -100,6 +100,7 @@ class StreamReceiver(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+        sayGoodbye()
         unregisterNetworkCallback()
         socket?.close()
         synchronized(lock) { lock.notifyAll() }
@@ -108,6 +109,23 @@ class StreamReceiver(
         threads.clear()
         live = null
         if (!Stats.state.contains("error", ignoreCase = true)) Stats.state = "Idle"
+    }
+
+    /** Tell the agent we are leaving so it restores the PC's audio output now. Sent 3 times (UDP), off the caller's thread. */
+    private fun sayGoodbye() {
+        val l = live ?: return
+        val sock = socket ?: return
+        val t = Thread {
+            try {
+                repeat(3) {
+                    val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ControlWire.encodeBye())
+                    sock.send(DatagramPacket(d, d.size))
+                    Thread.sleep(20)
+                }
+            } catch (_: Exception) {}
+        }
+        t.start()
+        t.join(300)
     }
 
     /** Ask the receive thread to rebuild the socket and session (safe from any thread). */
