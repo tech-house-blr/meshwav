@@ -1,0 +1,17 @@
+[package]
+name = "meshwav-agent"
+description = "Meshwav desktop agent: captures system audio, encodes Opus and streams it over the tailnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "meshwav-agent"
+path = "src/main.rs"
+
+[dependencies]
+audio-protocol = { path = "../audio-protocol" }
+audio-codec = { path = "../audio-codec" }
+audio-transport = { path = "../audio-transport" }
+getrandom = { version = "0.2", features = ["std"] }
