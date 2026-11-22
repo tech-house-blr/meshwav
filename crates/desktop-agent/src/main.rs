@@ -14,7 +14,8 @@ mod store;
 use audio_codec::opus::OpusEncoder;
 use audio_protocol::crypto::{Direction, Opener, Sealer};
 use audio_protocol::handshake::{self, hex};
-use audio_protocol::packet::{Header, PacketType};
+use audio_protocol::control::{Message, FRAME_CHOICES_MS, MAX_KBPS, MIN_KBPS, REJECT_BITRATE, REJECT_ENCODER, REJECT_FRAME};
+use audio_protocol::packet::{frame_flags, Header, PacketType};
 use audio_protocol::server::{Outcome, Server};
 use audio_transport::is_tailnet_or_loopback;
 use std::io::{BufRead, Read};
@@ -36,12 +37,70 @@ struct Session {
     peer: [u8; 32],
     last_seen: Instant,
     sealer: Sealer,
+    /// Agent-to-receiver packets on the control stream: keepalives and control replies.
     keepalive: Sealer,
     opener: Opener,
+    /// Receiver-to-agent control packets (own stream id, own nonce space).
+    ctl_opener: Opener,
+    ctl: ControlState,
+}
+
+/// Runtime configuration requests from the receiver. Pure state, so the policy is unit-testable.
+#[derive(Default)]
+struct ControlState {
+    /// Accepted request waiting for the capture loop to apply it at the next frame boundary.
+    pending: Option<(u16, u32, u8)>,
+    last_req: Option<u16>,
+    last_reply: Option<Message>,
+}
+
+impl ControlState {
+    /// Handle a decoded receiver message. Returns a reply to send right away, if any.
+    /// A repeated request id is answered with the stored reply and never applied twice.
+    fn on_message(&mut self, msg: Message) -> Option<Message> {
+        let Message::SetConfig { req, kbps, frame_ms } = msg else { return None };
+        if self.last_req == Some(req) {
+            return self.last_reply.clone(); // still pending: stay silent, the receiver will retry
+        }
+        self.last_req = Some(req);
+        self.last_reply = None;
+        self.pending = None;
+        let reject = |reason| Some(Message::ConfigRejected { req, reason });
+        let reply = if kbps != 0 && !(MIN_KBPS..=MAX_KBPS).contains(&kbps) {
+            reject(REJECT_BITRATE)
+        } else if frame_ms != 0 && !FRAME_CHOICES_MS.contains(&frame_ms) {
+            reject(REJECT_FRAME)
+        } else {
+            self.pending = Some((req, kbps, frame_ms));
+            None
+        };
+        self.last_reply = reply.clone();
+        reply
+    }
+
+    /// Called by the capture loop between frames. `apply` switches the encoder and returns the values
+    /// now in force, or an error reason. Returns the reply to send.
+    fn take_pending(&mut self, apply: impl FnOnce(u32, u8) -> Result<(u32, u8), u8>) -> Option<Message> {
+        let (req, kbps, frame_ms) = self.pending.take()?;
+        let reply = match apply(kbps, frame_ms) {
+            Ok((kbps, frame_ms)) => Message::ConfigApplied { req, kbps, frame_ms },
+            Err(reason) => Message::ConfigRejected { req, reason },
+        };
+        self.last_reply = Some(reply.clone());
+        Some(reply)
+    }
 }
 
 impl Session {
     /// Sealed empty `Punch` on the control stream: proves liveness (and the handshake) to the receiver.
+    fn send_control(&mut self, msg: &Message, sock: &UdpSocket) {
+        let h = Header { ptype: PacketType::Control, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
+        let mut out = Vec::with_capacity(96);
+        if self.keepalive.seal(h, &msg.encode(), &mut out).is_ok() {
+            let _ = sock.send_to(&out, self.addr);
+        }
+    }
+
     fn send_keepalive(&mut self, sock: &UdpSocket) {
         let h = Header {
             ptype: PacketType::Punch,
@@ -217,7 +276,8 @@ fn main() {
     });
 
     let mut enc = OpusEncoder::new(frame_ms * 1000, kbps, false).expect("encoder");
-    let frame_samples = enc.frame_samples();
+    let mut frame_samples = enc.frame_samples();
+    let (mut cur_kbps, mut cur_frame_ms) = (kbps, frame_ms);
 
     let session: Arc<Mutex<Option<Session>>> = Arc::new(Mutex::new(None));
     {
@@ -262,6 +322,8 @@ fn main() {
                                 sealer: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, STREAM_ID, 0),
                                 keepalive: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, CONTROL_STREAM, 0),
                                 opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, STREAM_ID),
+                                ctl_opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, CONTROL_STREAM),
+                                ctl: ControlState::default(),
                             };
                             s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
                             *cur = Some(s);
@@ -273,6 +335,15 @@ fn main() {
                     if let Ok((h, _)) = s.opener.open(d) {
                         if h.ptype == PacketType::Punch {
                             s.last_seen = Instant::now();
+                        }
+                    } else if let Ok((h, body)) = s.ctl_opener.open(d) {
+                        s.last_seen = Instant::now();
+                        if h.ptype == PacketType::Control {
+                            if let Ok(Some((msg, _))) = Message::decode(&body) {
+                                if let Some(reply) = s.ctl.on_message(msg) {
+                                    s.send_control(&reply, &sock);
+                                }
+                            }
                         }
                     }
                 }
@@ -380,7 +451,7 @@ fn main() {
                         timestamp: ts,
                         frag_idx: 0,
                         frag_cnt: 1,
-                        flags: 0,
+                        flags: frame_flags(cur_frame_ms),
                     };
                     out.clear();
                     if sess.sealer.seal(h, frame, &mut out).is_err() {
@@ -388,6 +459,27 @@ fn main() {
                     } else {
                         let _ = sock.send_to(&out, sess.addr);
                         sent += 1;
+                    }
+                    // Apply a requested change after this frame, so the old encoder finishes its frame and
+                    // every packet announces the frame size it was actually encoded with.
+                    let applied = sess.ctl.take_pending(|k, f| {
+                        let want_k = if k == 0 { cur_kbps } else { k };
+                        let want_f = if f == 0 { cur_frame_ms } else { u32::from(f) };
+                        if want_f != cur_frame_ms {
+                            let e = OpusEncoder::new(want_f * 1000, want_k, false).map_err(|_| REJECT_ENCODER)?;
+                            frame_samples = e.frame_samples();
+                            enc = e;
+                            raw.resize(frame_samples * 4, 0);
+                            pcm.resize(frame_samples * 2, 0);
+                        } else if want_k != cur_kbps {
+                            enc.set_bitrate_kbps(want_k).map_err(|_| REJECT_ENCODER)?;
+                        }
+                        (cur_kbps, cur_frame_ms) = (want_k, want_f);
+                        println!("receiver set {want_k} kbit/s, {want_f} ms frames");
+                        Ok((want_k, want_f as u8))
+                    });
+                    if let Some(reply) = applied {
+                        sess.send_control(&reply, &sock);
                     }
                 }
             }
@@ -403,5 +495,68 @@ fn main() {
                 last_report = Instant::now();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(req: u16, kbps: u32, frame_ms: u8) -> Message {
+        Message::SetConfig { req, kbps, frame_ms }
+    }
+
+    #[test]
+    fn valid_request_is_pending_until_applied_then_replied() {
+        let mut c = ControlState::default();
+        assert_eq!(c.on_message(set(1, 128, 20)), None);
+        let r = c.take_pending(|k, f| { assert_eq!((k, f), (128, 20)); Ok((k, f)) });
+        assert_eq!(r, Some(Message::ConfigApplied { req: 1, kbps: 128, frame_ms: 20 }));
+        assert_eq!(c.take_pending(|_, _| panic!("applied twice")), None);
+    }
+
+    #[test]
+    fn repeated_request_replays_reply_and_is_not_applied_twice() {
+        let mut c = ControlState::default();
+        c.on_message(set(5, 96, 0));
+        c.take_pending(|k, f| Ok((k, if f == 0 { 10 } else { f })));
+        let again = c.on_message(set(5, 96, 0));
+        assert_eq!(again, Some(Message::ConfigApplied { req: 5, kbps: 96, frame_ms: 10 }));
+        assert_eq!(c.take_pending(|_, _| panic!("applied twice")), None);
+    }
+
+    #[test]
+    fn retry_while_pending_stays_silent() {
+        let mut c = ControlState::default();
+        assert_eq!(c.on_message(set(2, 0, 5)), None);
+        assert_eq!(c.on_message(set(2, 0, 5)), None);
+        assert!(c.pending.is_some());
+    }
+
+    #[test]
+    fn out_of_range_values_are_rejected_and_never_applied() {
+        let mut c = ControlState::default();
+        for (k, f, why) in [(63, 10, REJECT_BITRATE), (257, 10, REJECT_BITRATE), (u32::MAX, 0, REJECT_BITRATE), (128, 7, REJECT_FRAME), (128, 40, REJECT_FRAME), (0, 255, REJECT_FRAME)] {
+            let req = (k % 1000) as u16 + u16::from(f);
+            assert_eq!(c.on_message(set(req, k, f)), Some(Message::ConfigRejected { req, reason: why }), "{k} {f}");
+            assert!(c.pending.is_none());
+        }
+    }
+
+    #[test]
+    fn encoder_failure_is_reported_and_new_request_supersedes_old() {
+        let mut c = ControlState::default();
+        c.on_message(set(1, 100, 10));
+        c.on_message(set(2, 200, 5)); // supersedes the unapplied first request
+        let r = c.take_pending(|k, f| { assert_eq!((k, f), (200, 5)); Err(REJECT_ENCODER) });
+        assert_eq!(r, Some(Message::ConfigRejected { req: 2, reason: REJECT_ENCODER }));
+    }
+
+    #[test]
+    fn other_messages_are_ignored() {
+        let mut c = ControlState::default();
+        assert_eq!(c.on_message(Message::Bye { reason: 0 }), None);
+        assert_eq!(c.on_message(Message::ConfigApplied { req: 1, kbps: 1, frame_ms: 1 }), None);
+        assert!(c.pending.is_none());
     }
 }

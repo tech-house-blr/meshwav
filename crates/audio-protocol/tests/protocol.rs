@@ -192,6 +192,9 @@ fn samples() -> Vec<Message> {
         Message::Pong { echo_us: 1, t_us: 2 },
         Message::Stats { received: 10, lost: 1, late: 2, concealed: 3, buffer_ms: 20, relayed: true },
         Message::Bye { reason: 4 },
+        Message::SetConfig { req: 7, kbps: 128, frame_ms: 20 },
+        Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20 },
+        Message::ConfigRejected { req: 8, reason: 1 },
     ]
 }
 
@@ -275,3 +278,46 @@ fn golden_vector() {
     assert_eq!(hex, GOLDEN);
 }
 const GOLDEN: &str = "4d5701010102030400000005000001e0000100016c2d66a77895e6de6ab18ab34b758807a42b8c6bed4fb0";
+
+#[test]
+fn frame_flags_roundtrip_and_reject_garbage() {
+    use audio_protocol::packet::{frame_flags, frame_ms_from_flags, FLAG_KEYFRAME, FLAG_SILENCE};
+    for ms in [5u32, 10, 20] {
+        assert_eq!(frame_ms_from_flags(frame_flags(ms)), ms);
+        // other flag bits do not disturb it
+        assert_eq!(frame_ms_from_flags(frame_flags(ms) | FLAG_KEYFRAME | FLAG_SILENCE), ms);
+    }
+    for ms in [0u32, 1, 2, 3, 15, 40, 60] {
+        assert_eq!(frame_flags(ms), 0);
+    }
+    for code in [0u16, 3, 5, 6, 7] {
+        assert_eq!(frame_ms_from_flags(code << 2), 0, "code {code}");
+    }
+}
+
+#[test]
+fn control_packet_type_is_sealed_and_authenticated() {
+    let key = [9u8; 32];
+    let mut s = Sealer::new(&key, Direction::ReceiverToAgent, 2, 0);
+    let mut o = Opener::new(&key, Direction::ReceiverToAgent, 2);
+    let body = Message::SetConfig { req: 1, kbps: 96, frame_ms: 5 }.encode();
+    let h = Header { ptype: PacketType::Control, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
+    let mut out = Vec::new();
+    s.seal(h, &body, &mut out).unwrap();
+    let (hh, pt) = o.open(&out).unwrap();
+    assert_eq!(hh.ptype, PacketType::Control);
+    assert_eq!(Message::decode(&pt).unwrap().unwrap().0, Message::SetConfig { req: 1, kbps: 96, frame_ms: 5 });
+    // a flipped bit anywhere fails authentication
+    let mut bad = out.clone();
+    bad[25] ^= 1;
+    assert!(Opener::new(&key, Direction::ReceiverToAgent, 2).open(&bad).is_err());
+}
+
+/// The same literals are asserted by the Kotlin ControlTest, which keeps both parsers on identical bytes.
+#[test]
+fn runtime_config_messages_have_fixed_wire_bytes() {
+    let hex = |m: Message| m.encode().iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(hex(Message::SetConfig { req: 7, kbps: 128, frame_ms: 20 }), "00080b000700000080" .to_string() + "14");
+    assert_eq!(hex(Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20 }), "00080c000700000080".to_string() + "14");
+    assert_eq!(hex(Message::ConfigRejected { req: 8, reason: 1 }), "00040d000801");
+}

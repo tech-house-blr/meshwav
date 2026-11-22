@@ -59,6 +59,36 @@ class LiveAgentInteropTest {
         assertFalse(k1.toReceiver.contentEquals(k2.toReceiver))
         assertTrue(listen(s2, k2, 2000).first.size > 30)
 
+        // 2b. runtime config against the real agent: 20 ms frames at 96 kbit/s, then a refused value
+        run {
+            val buf = ByteArray(2048); val pkt = DatagramPacket(buf, buf.size)
+            var punchSeq = 0L; var ctlSeq = 0L
+            fun sendPunch() { val d = Wire.seal(k2.toAgent, Wire.DIR_RECEIVER_TO_AGENT, 1, punchSeq++, Wire.TYPE_PUNCH, 0, ByteArray(0)); s2.send(DatagramPacket(d, d.size)) }
+            fun sendCtl(b: ByteArray) { val d = Wire.seal(k2.toAgent, Wire.DIR_RECEIVER_TO_AGENT, 2, ctlSeq++, Wire.TYPE_CONTROL, 0, b); s2.send(DatagramPacket(d, d.size)) }
+            fun await(ms: Long, want: (ControlWire.Msg) -> Boolean): ControlWire.Msg? {
+                val end = System.currentTimeMillis() + ms
+                while (System.currentTimeMillis() < end) {
+                    try { s2.receive(pkt) } catch (_: java.net.SocketTimeoutException) { continue }
+                    val c = Wire.open(k2.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, 2, buf, pkt.length) ?: continue
+                    if (c.type == Wire.TYPE_CONTROL) ControlWire.decode(c.payload)?.let { if (want(it)) return it }
+                }
+                return null
+            }
+            sendPunch()
+            sendCtl(ControlWire.encodeSetConfig(1, 96, 20))
+            assertEquals(ControlWire.Msg.Applied(1, 96, 20), await(3000) { it is ControlWire.Msg.Applied })
+            val frames = HashSet<Int>()
+            val end = System.currentTimeMillis() + 800
+            while (System.currentTimeMillis() < end) {
+                try { s2.receive(pkt) } catch (_: java.net.SocketTimeoutException) { continue }
+                Wire.open(k2.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, 1, buf, pkt.length)?.let { if (it.type == Wire.TYPE_AUDIO) frames += ControlWire.frameMsFromFlags(it.flags) }
+            }
+            assertTrue("frames after switch: $frames", frames.contains(20) && frames.size <= 2)
+            sendPunch()
+            sendCtl(ControlWire.encodeSetConfig(2, 999, 0))
+            assertEquals(ControlWire.Msg.Rejected(2, ControlWire.REJECT_BITRATE), await(3000) { it is ControlWire.Msg.Rejected })
+        }
+
         // 3. wrong pinned agent key aborts fatally before sending our identity
         val e = assertThrows(HandshakeException::class.java) { Handshake.run(sock(port), priv, ByteArray(32) { 5 }, null, "x") { true } }
         assertTrue(e.fatal)

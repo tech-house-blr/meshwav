@@ -35,7 +35,21 @@ pub enum Message {
     Pong { echo_us: u64, t_us: u64 },
     Stats { received: u32, lost: u32, late: u32, concealed: u32, buffer_ms: u16, relayed: bool },
     Bye { reason: u8 },
+    /// Receiver asks the agent to change the encoder at runtime. 0 means "keep the current value".
+    SetConfig { req: u16, kbps: u32, frame_ms: u8 },
+    /// Agent confirms; carries the values now in force. Repeated verbatim for a repeated `req`.
+    ConfigApplied { req: u16, kbps: u32, frame_ms: u8 },
+    /// Agent refuses; see `REJECT_*`.
+    ConfigRejected { req: u16, reason: u8 },
 }
+
+pub const REJECT_BITRATE: u8 = 1;
+pub const REJECT_FRAME: u8 = 2;
+pub const REJECT_ENCODER: u8 = 3;
+/// Bitrate range the agent accepts at runtime (kbit/s) and the frame sizes it can switch between (ms).
+pub const MIN_KBPS: u32 = 64;
+pub const MAX_KBPS: u32 = 256;
+pub const FRAME_CHOICES_MS: [u8; 3] = [5, 10, 20];
 
 struct W(Vec<u8>);
 impl W {
@@ -109,6 +123,9 @@ impl Message {
                 w.u16(*buffer_ms); w.u8(*relayed as u8);
             }
             Message::Bye { reason } => { w.u8(9); w.u8(*reason); }
+            Message::SetConfig { req, kbps, frame_ms } => { w.u8(11); w.u16(*req); w.u32(*kbps); w.u8(*frame_ms); }
+            Message::ConfigApplied { req, kbps, frame_ms } => { w.u8(12); w.u16(*req); w.u32(*kbps); w.u8(*frame_ms); }
+            Message::ConfigRejected { req, reason } => { w.u8(13); w.u16(*req); w.u8(*reason); }
         }
         let len = (w.0.len() - 2) as u16;
         w.0[0..2].copy_from_slice(&len.to_be_bytes());
@@ -132,6 +149,9 @@ impl Message {
             7 => Message::Pong { echo_us: r.u64()?, t_us: r.u64()? },
             8 => Message::Stats { received: r.u32()?, lost: r.u32()?, late: r.u32()?, concealed: r.u32()?, buffer_ms: r.u16()?, relayed: match r.u8()? { 0 => false, 1 => true, _ => return Err(ProtocolError::BadControl("bad bool")) } },
             9 => Message::Bye { reason: r.u8()? },
+            11 => Message::SetConfig { req: r.u16()?, kbps: r.u32()?, frame_ms: r.u8()? },
+            12 => Message::ConfigApplied { req: r.u16()?, kbps: r.u32()?, frame_ms: r.u8()? },
+            13 => Message::ConfigRejected { req: r.u16()?, reason: r.u8()? },
             _ => return Err(ProtocolError::BadControl("unknown type")),
         };
         if !r.0.is_empty() { return Err(ProtocolError::BadControl("trailing bytes")) }
