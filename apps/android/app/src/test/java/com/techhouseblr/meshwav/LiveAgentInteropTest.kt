@@ -76,7 +76,7 @@ class LiveAgentInteropTest {
             }
             sendPunch()
             sendCtl(ControlWire.encodeSetConfig(1, 96, 20))
-            assertEquals(ControlWire.Msg.Applied(1, 96, 20), await(3000) { it is ControlWire.Msg.Applied })
+            assertEquals(ControlWire.Msg.Applied(1, 96, 20, 1), await(3000) { it is ControlWire.Msg.Applied })
             val frames = HashSet<Int>()
             val end = System.currentTimeMillis() + 800
             while (System.currentTimeMillis() < end) {
@@ -87,6 +87,23 @@ class LiveAgentInteropTest {
             sendPunch()
             sendCtl(ControlWire.encodeSetConfig(2, 999, 0))
             assertEquals(ControlWire.Msg.Rejected(2, ControlWire.REJECT_BITRATE), await(3000) { it is ControlWire.Msg.Rejected })
+
+            // lossless: whole 5 ms PCM datagrams, then back to Opus
+            sendPunch()
+            sendCtl(ControlWire.encodeSetConfig(3, 0, 0, ControlWire.CODEC_PCM))
+            assertEquals(ControlWire.Msg.Applied(3, 96, 20, 2), await(3000) { it is ControlWire.Msg.Applied })
+            var pcmOk = 0; var other = 0
+            val end2 = System.currentTimeMillis() + 800
+            while (System.currentTimeMillis() < end2) {
+                try { s2.receive(pkt) } catch (_: java.net.SocketTimeoutException) { continue }
+                Wire.open(k2.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, 1, buf, pkt.length)?.let {
+                    if (it.type == Wire.TYPE_AUDIO) { if (ControlWire.isPcm(it.flags) && ControlWire.audioPlausible(it.flags, it.payload.size)) pcmOk++ else other++ }
+                }
+            }
+            assertTrue("PCM packets $pcmOk, others $other", pcmOk > 50 && other < 10)
+            sendPunch()
+            sendCtl(ControlWire.encodeSetConfig(4, 0, 0, ControlWire.CODEC_OPUS))
+            assertEquals(ControlWire.Msg.Applied(4, 96, 20, 1), await(3000) { it is ControlWire.Msg.Applied })
         }
 
         // 3. wrong pinned agent key aborts fatally before sending our identity

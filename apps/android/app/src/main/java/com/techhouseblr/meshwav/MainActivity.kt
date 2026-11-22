@@ -30,6 +30,7 @@ class MainActivity : Activity() {
 
     private lateinit var store: PairingStore
     private lateinit var pairedInfo: TextView
+    private lateinit var quality: LinearLayout
 
     /** What the agent prints when pairing: host, port, its public key and the one-time code. */
     private data class Target(val host: String, val port: Int, val pk: String, val code: String)
@@ -76,6 +77,14 @@ class MainActivity : Activity() {
             Controls.desiredFrameMs = if (i == 0) 0 else Controls.frameChoices[i - 1]
             prefs.edit().putInt("frame_ms", Controls.desiredFrameMs).apply()
         })
+        Controls.desiredCodec = prefs.getInt("codec", 1).takeIf { it == 1 || it == 2 } ?: 1
+        root.addView(TextView(this).apply { text = "Quality (lossless sends the PC audio uncompressed, about 1.7 Mbit/s, always in 5 ms packets; it drops back to Opus if the connection cannot carry it)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, 0) })
+        quality = choice("Quality", listOf("Opus (compressed)", "Lossless PCM"), Controls.desiredCodec - 1) { i ->
+            Controls.desiredCodec = i + 1
+            if (i == 1) Stats.qualityNote = ""
+            prefs.edit().putInt("codec", Controls.desiredCodec).apply()
+        }
+        root.addView(quality)
         button = Button(this).apply { setOnClickListener { toggle() } }
         root.addView(button, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
         status = TextView(this).apply { setTextColor(Color.parseColor("#7fd1ae")); textSize = 16f; gravity = Gravity.START; setPadding(0, pad, 0, 0) }
@@ -135,7 +144,10 @@ class MainActivity : Activity() {
     private fun encoderText(): String = with(Stats) {
         val k = if (kbps > 0) "$kbps kbit/s" else "bitrate: agent default"
         val f = if (frameMs > 0) "$frameMs ms frames" else "frame size unknown"
-        "encoder $k, $f" + if (configNote.isNotEmpty()) "  ($configNote)" else ""
+        val head = if (lossless) "lossless PCM to this app, $f" else "encoder Opus $k, $f"
+        head + (if (configNote.isNotEmpty()) "  ($configNote)" else "") +
+            (if (output.isNotEmpty()) "\nAndroid output: $output" + (if (lossless) " (the app cannot tell whether Android resamples after this)" else "") else "") +
+            (if (qualityNote.isNotEmpty()) "\n$qualityNote" else "")
     }
 
     private fun statsText(): String = with(Stats) {
@@ -145,6 +157,8 @@ class MainActivity : Activity() {
     }
 
     private fun tick() {
+        val wantIdx = Controls.desiredCodec - 1
+        if (quality.getChildAt(1).let { (it as Spinner).selectedItemPosition } != wantIdx) (quality.getChildAt(1) as Spinner).setSelection(wantIdx, false)
         button.text = if (PlaybackService.running) "Disconnect" else "Connect"
         pairedInfo.text = store.paired()?.let { "Paired with ${it.host}:${it.port}  (agent key ${it.agentPublic.take(6).joinToString("") { b -> "%02x".format(b) }}…)  long-press to forget" } ?: "Not paired"
         if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = statsText()

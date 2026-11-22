@@ -18,6 +18,9 @@ pub const FLAG_SILENCE: u16 = 1 << 1;
 pub const FLAG_FRAME_SHIFT: u16 = 2;
 pub const FLAG_FRAME_MASK: u16 = 0b111 << FLAG_FRAME_SHIFT;
 
+/// Payload is raw 48 kHz stereo s16le PCM (lossless) instead of Opus. Always 5 ms (960 bytes).
+pub const FLAG_PCM: u16 = 1 << 5;
+
 /// Flag bits announcing `frame_ms` (5, 10 or 20); 0 for anything else.
 pub fn frame_flags(frame_ms: u32) -> u16 {
     match frame_ms {

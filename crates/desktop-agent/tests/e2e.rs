@@ -3,8 +3,8 @@
 //! agent restart, wrong code, unpaired device, and a second pairing via the stdin command.
 use audio_protocol::crypto::{Direction, Opener, Sealer};
 use audio_protocol::handshake::*;
-use audio_protocol::control::Message;
-use audio_protocol::packet::{frame_ms_from_flags, Header, PacketType};
+use audio_protocol::control::{Message, REJECT_CODEC};
+use audio_protocol::packet::{frame_ms_from_flags, Header, PacketType, FLAG_PCM};
 use std::io::{BufRead, BufReader, Write};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ fn workdir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("bin")).unwrap();
     let parec = d.join("bin/parec");
-    std::fs::write(&parec, "#!/bin/sh\nwhile true; do head -c 1920 /dev/zero; sleep 0.01; done\n").unwrap();
+    std::fs::write(&parec, "#!/bin/sh\nwhile true; do head -c 1920 /dev/zero || exit 0; sleep 0.01; done\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&parec, std::fs::Permissions::from_mode(0o755)).unwrap();
     d
@@ -253,7 +253,7 @@ fn pin_mismatch_aborts_and_second_pairing_via_stdin() {
 }
 
 enum Ev {
-    Audio { seq: u32, frame_ms: u32 },
+    Audio { seq: u32, frame_ms: u32, pcm: bool, len: usize },
     Ctl(Message),
 }
 
@@ -299,9 +299,9 @@ impl<'a> Link<'a> {
                 self.next_punch = Instant::now() + Duration::from_millis(500);
             }
             let Ok(n) = self.d.sock.recv(&mut buf) else { continue };
-            if let Ok((h, _)) = self.audio.open(&buf[..n]) {
+            if let Ok((h, body)) = self.audio.open(&buf[..n]) {
                 if h.ptype == PacketType::Audio {
-                    evs.push(Ev::Audio { seq: h.seq, frame_ms: frame_ms_from_flags(h.flags) });
+                    evs.push(Ev::Audio { seq: h.seq, frame_ms: frame_ms_from_flags(h.flags), pcm: h.flags & FLAG_PCM != 0, len: body.len() });
                 }
             } else if let Ok((h, body)) = self.ctl.open(&buf[..n]) {
                 if h.ptype == PacketType::Control {
@@ -347,12 +347,12 @@ fn runtime_bitrate_and_frame_size_changes() {
     let mut l = Link::new(&d);
 
     let evs = l.pump(1000);
-    assert!(frame_sizes(&evs).len() > 50 && frame_sizes(&evs).iter().all(|&f| f == 10), "default is 10 ms frames");
+    assert!(frame_sizes(&evs).len() > 50 && frame_sizes(&evs).iter().all(|&f| f == 10), "default is 10 ms frames: {:?}", frame_sizes(&evs));
     let mut last_seq = *seqs(&evs).last().unwrap();
 
     // switch to 20 ms frames at 96 kbit/s
-    let (reply, after) = l.request(Message::SetConfig { req: 1, kbps: 96, frame_ms: 20 }, 1);
-    assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20 });
+    let (reply, after) = l.request(Message::SetConfig { req: 1, kbps: 96, frame_ms: 20, codec: 0 }, 1);
+    assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20, codec: 1 });
     agent.wait_line("receiver set 96 kbit/s, 20 ms frames");
     let mut evs = after;
     evs.extend(l.pump(1000));
@@ -365,24 +365,24 @@ fn runtime_bitrate_and_frame_size_changes() {
     last_seq = *sq.last().unwrap();
 
     // a repeated request id is answered again, not applied again
-    l.send(&Message::SetConfig { req: 1, kbps: 96, frame_ms: 20 });
+    l.send(&Message::SetConfig { req: 1, kbps: 96, frame_ms: 20, codec: 0 });
     let again = l.pump(600);
-    assert!(again.iter().any(|e| matches!(e, Ev::Ctl(Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20 }))), "reply replayed");
+    assert!(again.iter().any(|e| matches!(e, Ev::Ctl(Message::ConfigApplied { req: 1, kbps: 96, frame_ms: 20, codec: 1 }))), "reply replayed");
 
     // out-of-range values are refused and change nothing
-    let (reply, after) = l.request(Message::SetConfig { req: 2, kbps: 999, frame_ms: 0 }, 2);
+    let (reply, after) = l.request(Message::SetConfig { req: 2, kbps: 999, frame_ms: 0, codec: 0 }, 2);
     assert_eq!(reply, Message::ConfigRejected { req: 2, reason: audio_protocol::control::REJECT_BITRATE });
-    let (reply, _) = l.request(Message::SetConfig { req: 3, kbps: 0, frame_ms: 40 }, 3);
+    let (reply, _) = l.request(Message::SetConfig { req: 3, kbps: 0, frame_ms: 40, codec: 0 }, 3);
     assert_eq!(reply, Message::ConfigRejected { req: 3, reason: audio_protocol::control::REJECT_FRAME });
     let mut evs = after;
     evs.extend(l.pump(500));
     assert!(frame_sizes(&evs).iter().all(|&f| f == 20), "still 20 ms after rejected requests");
 
     // bitrate only (0 keeps the frame size), then 5 ms frames (0 keeps the bitrate)
-    let (reply, _) = l.request(Message::SetConfig { req: 4, kbps: 200, frame_ms: 0 }, 4);
-    assert_eq!(reply, Message::ConfigApplied { req: 4, kbps: 200, frame_ms: 20 });
-    let (reply, after) = l.request(Message::SetConfig { req: 5, kbps: 0, frame_ms: 5 }, 5);
-    assert_eq!(reply, Message::ConfigApplied { req: 5, kbps: 200, frame_ms: 5 });
+    let (reply, _) = l.request(Message::SetConfig { req: 4, kbps: 200, frame_ms: 0, codec: 0 }, 4);
+    assert_eq!(reply, Message::ConfigApplied { req: 4, kbps: 200, frame_ms: 20, codec: 1 });
+    let (reply, after) = l.request(Message::SetConfig { req: 5, kbps: 0, frame_ms: 5, codec: 0 }, 5);
+    assert_eq!(reply, Message::ConfigApplied { req: 5, kbps: 200, frame_ms: 5, codec: 1 });
     let mut evs = after;
     evs.extend(l.pump(1000));
     let fs = frame_sizes(&evs);
@@ -402,7 +402,7 @@ fn control_requests_from_an_unpaired_device_do_nothing() {
     // a stranger completes XX msg2 but is not authorised, and a forged request with a wrong key goes nowhere
     let stranger = dial(port, &Keypair::generate(), pk, None, 2).unwrap();
     let mut ls = Link::new(&stranger);
-    ls.send(&Message::SetConfig { req: 1, kbps: 64, frame_ms: 5 });
+    ls.send(&Message::SetConfig { req: 1, kbps: 64, frame_ms: 5, codec: 0 });
     assert!(ls.pump(800).is_empty(), "stranger gets nothing, not even a rejection");
     let fs = frame_sizes(&lo.pump(500));
     assert!(fs.iter().all(|&f| f == 10), "owner's stream unchanged");
@@ -422,4 +422,55 @@ fn goodbye_stops_the_stream_at_once() {
     agent.wait_line("receiver said goodbye");
     l.pump(100); // drain what was already in flight
     assert!(frame_sizes(&l.pump(700)).is_empty(), "no audio after goodbye, even though punches keep arriving");
+}
+
+#[test]
+fn lossless_pcm_is_one_datagram_per_5ms_and_switches_back_to_opus() {
+    let dir = workdir("pcm");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+    let evs = l.pump(500);
+    assert!(evs.iter().any(|e| matches!(e, Ev::Audio { pcm: false, .. })));
+
+    let (reply, after) = l.request(Message::SetConfig { req: 1, kbps: 0, frame_ms: 0, codec: 2 }, 1);
+    assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 160, frame_ms: 10, codec: 2 }, "the Opus settings are remembered");
+    agent.wait_line("receiver set lossless PCM");
+    let mut evs = after;
+    evs.extend(l.pump(1000));
+    let pcm: Vec<_> = evs.iter().filter_map(|e| if let Ev::Audio { pcm: true, frame_ms, len, .. } = e { Some((*frame_ms, *len)) } else { None }).collect();
+    assert!(pcm.len() > 40, "got {} PCM packets", pcm.len());
+    assert!(pcm.iter().all(|&(f, n)| f == 5 && n == 960), "every PCM packet is 5 ms and exactly 960 bytes: {pcm:?}");
+    let s = seqs(&evs);
+    assert!(s.windows(2).all(|w| w[1] == w[0] + 1), "audio sequence stays gap-free across the switch");
+
+    let (reply, after) = l.request(Message::SetConfig { req: 2, kbps: 0, frame_ms: 0, codec: 1 }, 2);
+    assert_eq!(reply, Message::ConfigApplied { req: 2, kbps: 160, frame_ms: 10, codec: 1 });
+    let mut evs = after;
+    evs.extend(l.pump(800));
+    let tail: Vec<_> = evs.iter().rev().take(30).collect();
+    assert!(tail.iter().all(|e| matches!(e, Ev::Audio { pcm: false, frame_ms: 10, len, .. } if *len < 960)), "back to 10 ms Opus");
+
+    // a codec the agent does not have is refused and changes nothing
+    let (reply, _) = l.request(Message::SetConfig { req: 3, kbps: 0, frame_ms: 0, codec: 3 }, 3);
+    assert_eq!(reply, Message::ConfigRejected { req: 3, reason: REJECT_CODEC });
+}
+
+#[test]
+fn sigterm_stops_the_agent_even_without_redirect() {
+    let dir = workdir("term");
+    let mut agent = start(&dir, true, free_port());
+    agent.wait_line("capturing from");
+    assert!(Command::new("kill").args(["-TERM", &agent.child.id().to_string()]).status().unwrap().success());
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end {
+        if agent.child.try_wait().unwrap().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("agent ignored SIGTERM");
 }
