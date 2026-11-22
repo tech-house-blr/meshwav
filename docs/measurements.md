@@ -1,0 +1,32 @@
+# Measurements
+
+## M1: UDP path over Tailscale (netprobe)
+
+Setup: sender/echo client on the Pi (`atlas`, Wi-Fi 2.4/5 GHz link at -43 dBm, Wi-Fi power save **on**), echo server on `liberation`
+(x86_64, direct tailnet path 192.168.0.x, ~2 ms `tailscale ping`). Real Meshwav packets (AEAD, 20-byte header).
+Tool: `cargo run --release -p audio-transport --bin netprobe`. Round-trip time (RTT) is measured; one-way is about RTT/2.
+
+| Scenario | Wire size / interval | Offered | Loss (fwd+ret) | RTT p50 | p95 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| Opus-like, 60 s | 236 B / 10 ms | 0.19 Mbit/s | 0.77% | 2.4 ms | 9.7 ms | 27 ms | 405 ms |
+| FLAC 96k/24-like, 20 s | 636 B / 2 ms | 2.5 Mbit/s | 0.21% | 4.3 ms | 99 ms | 172 ms | 334 ms |
+| PCM 96k/24-like, 20 s | 1200 B / 2 ms | 4.8 Mbit/s | 0.24% | 3.9 ms | 63 ms | 117 ms | 132 ms |
+| PCM 192k/24-like, 20 s | 1200 B / 1 ms | 9.6 Mbit/s | 0.38% | 6.3 ms | 173 ms | 346 ms | 412 ms |
+
+Findings:
+- Median path latency is small (2-6 ms RTT), so the latency target is achievable on a direct path.
+- Tail latency and loss are dominated by the Pi's Wi-Fi hop, not Tailscale or the crypto/protocol layer (0 unauthenticated drops, 0 sender-late events,
+  0 reordering except 1 packet). Likely cause: Wi-Fi power save (hypothesis, not yet verified by toggling it).
+- Consequence for design: a 20 ms jitter buffer is not enough on a weak Wi-Fi leg (p99 27 ms at the lightest load). Keep the buffer adaptive with a
+  40-60 ms upper default for lossless, and report p99 in diagnostics. Lossless at 9.6 Mbit/s over Wi-Fi shows severe tails: the profile
+  needs a wired/good-link warning and automatic fallback to Opus.
+- The Pi is not the final receiver. The meaningful numbers (PC to phone over Wi-Fi) come in M3.
+
+## M1: Codec results (synthetic tones + noise, so real music will differ)
+
+- Opus 48 kHz stereo: SNR 33-45 dB at 64-256 kbps for 5-20 ms frames; actual bitrate within 2-4% of target; packets always < 1164 B.
+  2.5 ms frames work but are noticeably worse at 64 kbps (18.5 dB).
+- FLAC (stateless frames, bare frames without STREAMINFO): bit-exact at 44.1/48/96/192 kHz, 16/24-bit. Size on the synthetic signal:
+  39% (48k/16), 59% (48k/24), 52% (96k/24), 44% (192k/24) of raw PCM. Each frame decodes independently; corruption is detected by the frame CRC.
+- flacenc caps sample rate at 96 kHz; we label frames with 96 kHz for higher rates (does not affect coding; verified bit-exact at 192 kHz).
+- PCM s16/s24/f32 round-trip exactly.

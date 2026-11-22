@@ -1,0 +1,10 @@
+[package]
+name = "audio-transport"
+description = "Meshwav transport tooling (netprobe: UDP path latency/loss measurement over Tailscale)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+audio-protocol = { path = "../audio-protocol" }

@@ -1,0 +1,8 @@
+Meshwav packet v1 golden vector
+key        = 000102...1f (32 bytes, byte i = i)
+direction  = AgentToReceiver (0)
+stream_id  = 0x01020304, seq = 5, timestamp = 480, frag 0/1, flags = KEYFRAME (1)
+payload    = "meshwav" (ASCII)
+nonce      = 00 000000 | 00000005 | 01020304  (dir, pad, seq, stream_id)
+aad        = the 20-byte header
+datagram   = 4d5701010102030400000005000001e0000100016c2d66a77895e6de6ab18ab34b758807a42b8c6bed4fb0

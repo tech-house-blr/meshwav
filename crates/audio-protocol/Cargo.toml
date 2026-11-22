@@ -1,0 +1,11 @@
+[package]
+name = "audio-protocol"
+description = "Meshwav wire protocol: packet framing, AEAD, replay window, fragmentation, control messages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chacha20poly1305.workspace = true
+thiserror.workspace = true
