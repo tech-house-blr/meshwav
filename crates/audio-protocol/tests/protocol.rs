@@ -195,6 +195,8 @@ fn samples() -> Vec<Message> {
         Message::SetConfig { req: 7, kbps: 128, frame_ms: 20, codec: 0 },
         Message::ConfigApplied { req: 7, kbps: 128, frame_ms: 20, codec: 1 },
         Message::ConfigRejected { req: 8, reason: 1 },
+        Message::ActiveState { active: true },
+        Message::ActiveState { active: false },
     ]
 }
 
@@ -322,4 +324,11 @@ fn runtime_config_messages_have_fixed_wire_bytes() {
     assert_eq!(hex(Message::SetConfig { req: 1, kbps: 0, frame_ms: 0, codec: 2 }), "00090b0001000000000002");
     assert_eq!(hex(Message::ConfigApplied { req: 1, kbps: 160, frame_ms: 10, codec: 2 }), "00090c0001000000a00a02");
     assert_eq!(hex(Message::ConfigRejected { req: 8, reason: 1 }), "00040d000801");
+    assert_eq!(hex(Message::ActiveState { active: true }), "00020e01");
+    assert_eq!(hex(Message::ActiveState { active: false }), "00020e00");
+}
+
+#[test]
+fn active_state_rejects_non_bool() {
+    assert!(Message::decode(&[0, 2, 14, 2]).is_err());
 }

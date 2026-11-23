@@ -18,6 +18,7 @@ object ControlWire {
     const val TYPE_SET_CONFIG = 11
     const val TYPE_CONFIG_APPLIED = 12
     const val TYPE_CONFIG_REJECTED = 13
+    const val TYPE_ACTIVE_STATE = 14
     const val REJECT_BITRATE = 1
     const val REJECT_FRAME = 2
     const val REJECT_ENCODER = 3
@@ -34,6 +35,8 @@ object ControlWire {
         data class SetConfig(val req: Int, val kbps: Int, val frameMs: Int, val codec: Int) : Msg()
         data class Applied(val req: Int, val kbps: Int, val frameMs: Int, val codec: Int) : Msg()
         data class Rejected(val req: Int, val reason: Int) : Msg()
+        /** The agent says whether this device is the one getting audio (true) or is on standby (false). */
+        data class Active(val active: Boolean) : Msg()
     }
 
     /** Goodbye: tells the agent to stop and give the PC's audio output back at once. */
@@ -54,6 +57,7 @@ object ControlWire {
         return when (b.get().toInt() and 0xff) {
             TYPE_CONFIG_APPLIED -> if (len == 9) Msg.Applied(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null
             TYPE_CONFIG_REJECTED -> if (len == 4) Msg.Rejected(b.short.toInt() and 0xffff, b.get().toInt() and 0xff) else null
+            TYPE_ACTIVE_STATE -> if (len == 2) when (b.get().toInt() and 0xff) { 0 -> Msg.Active(false); 1 -> Msg.Active(true); else -> null } else null
             TYPE_SET_CONFIG -> if (len == 9) Msg.SetConfig(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null
             else -> null
         }
