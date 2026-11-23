@@ -102,17 +102,61 @@ class PairingStore(context: Context) {
         return k
     }
 
-    data class Paired(val host: String, val port: Int, val agentPublic: ByteArray)
+    data class Paired(val host: String, val port: Int, val agentPublic: ByteArray) {
+        val keyHex: String get() = agentPublic.joinToString("") { "%02x".format(it) }
+    }
 
+    /** Every paired sender, keyed by its public key. Stored one per line as `key|host|port`. */
+    fun all(): List<Paired> {
+        migrate()
+        return (prefs.getString("senders", "") ?: "").lines().mapNotNull { l ->
+            val f = l.split("|")
+            if (f.size != 3 || f[0].length != 64) return@mapNotNull null
+            Paired(f[1], f[2].toIntOrNull() ?: 47900, unhex(f[0]))
+        }
+    }
+
+    /** The sender that auto-connect uses: the chosen default, else the first one. */
     fun paired(): Paired? {
-        val host = prefs.getString("host", null) ?: return null
-        val pk = prefs.getString("agent_pk", null)?.takeIf { it.length == 64 } ?: return null
-        return Paired(host, prefs.getInt("port", 47900), unhex(pk))
+        val list = all()
+        val d = prefs.getString("default", null)
+        return list.firstOrNull { it.keyHex == d } ?: list.firstOrNull()
     }
 
-    fun savePaired(host: String, port: Int, agentPublic: ByteArray) {
-        prefs.edit().putString("host", host).putInt("port", port).putString("agent_pk", hex(agentPublic)).apply()
+    fun defaultKey(): String? = paired()?.keyHex
+
+    fun setDefault(keyHex: String) { prefs.edit().putString("default", keyHex).apply() }
+
+    /** Adds the sender, or updates its address if its key is already known. The first one becomes the default. */
+    fun savePaired(host: String, port: Int, agentPublic: ByteArray, makeDefault: Boolean = false) {
+        val list = all().filter { !it.agentPublic.contentEquals(agentPublic) }.toMutableList()
+        val keep = all().firstOrNull { it.agentPublic.contentEquals(agentPublic) }
+        list.add(Paired(host, port, agentPublic))
+        val first = keep == null && all().isEmpty()
+        write(list)
+        if (makeDefault || first) setDefault(hex(agentPublic))
     }
 
-    fun forget() { prefs.edit().remove("host").remove("port").remove("agent_pk").apply() }
+    fun remove(keyHex: String) {
+        val wasDefault = defaultKey() == keyHex
+        write(all().filter { it.keyHex != keyHex })
+        if (wasDefault) prefs.edit().remove("default").apply()
+    }
+
+    fun forget() { prefs.edit().remove("senders").remove("default").remove("host").remove("port").remove("agent_pk").apply() }
+
+    private fun write(list: List<Paired>) {
+        prefs.edit().putString("senders", list.joinToString("\n") { "${it.keyHex}|${it.host}|${it.port}" }).apply()
+    }
+
+    /** Older versions kept a single sender under host / port / agent_pk. */
+    private fun migrate() {
+        val host = prefs.getString("host", null) ?: return
+        val pk = prefs.getString("agent_pk", null)?.takeIf { it.length == 64 }
+        val e = prefs.edit().remove("host").remove("port").remove("agent_pk")
+        if (pk != null && (prefs.getString("senders", "") ?: "").isEmpty()) {
+            e.putString("senders", "$pk|$host|${prefs.getInt("port", 47900)}").putString("default", pk)
+        }
+        e.apply()
+    }
 }

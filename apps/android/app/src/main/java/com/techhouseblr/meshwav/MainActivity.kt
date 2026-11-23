@@ -32,7 +32,8 @@ class MainActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var store: PairingStore
-    private lateinit var pairedInfo: TextView
+    private lateinit var sendersBox: LinearLayout
+    private var sendersShown = ""
     private lateinit var quality: LinearLayout
 
     /** What the agent prints when pairing: host, port, its public key and the one-time code. */
@@ -91,9 +92,15 @@ class MainActivity : Activity() {
             setOnClickListener { pairing.visibility = if (pairing.visibility == View.GONE) View.VISIBLE else View.GONE }
         })
         root.addView(pairing)
-        pairedInfo = TextView(this).apply { setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, 0); setOnLongClickListener { store.forget(); true } }
-        root.addView(pairedInfo)
         val prefs = getSharedPreferences("mw", MODE_PRIVATE)
+        root.addView(TextView(this).apply { text = "Paired senders"; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, pad, 0, 0) })
+        sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(sendersBox)
+        root.addView(android.widget.CheckBox(this).apply {
+            text = "Reconnect automatically to the default sender"
+            setTextColor(Color.WHITE); isChecked = prefs.getBoolean("auto", true)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("auto", on).apply() }
+        })
         Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
         Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
         root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })
@@ -153,13 +160,13 @@ class MainActivity : Activity() {
 
     /** Stay connected to the paired sender so it shows this phone as online without tapping Connect. */
     private fun autoConnect() {
-        if (PlaybackService.running || !getSharedPreferences("mw", MODE_PRIVATE).getBoolean("auto", true)) return
+        if (PlaybackService.running || PlaybackService.userStopped || invites != null) return
+        if (!getSharedPreferences("mw", MODE_PRIVATE).getBoolean("auto", true)) return
         val p = store.paired() ?: return
         startReceiving(p.host, p.port, p.agentPublic.joinToString("") { "%02x".format(it) }, null)
     }
 
     private fun startReceiving(host: String, port: Int, pkHex: String, code: String?) {
-        getSharedPreferences("mw", MODE_PRIVATE).edit().putBoolean("auto", true).apply()
         val svc = Intent(this, PlaybackService::class.java).putExtra("host", host).putExtra("port", port).putExtra("pk", pkHex)
         if (code != null) svc.putExtra("code", code)
         startForegroundService(svc)
@@ -172,6 +179,7 @@ class MainActivity : Activity() {
         if (!Handshake.validCode(code)) { status.text = "The pairing code is 6 digits."; return }
         val l = InviteListener()
         invites = l
+        if (PlaybackService.running) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
         pairBtn.text = "Cancel"
         status.text = "Looking for a sender showing this code. Open pairing on the computer now (waits about a minute)."
         Thread {
@@ -179,6 +187,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (invites !== l) return@runOnUiThread // cancelled
                 invites = null
+                PlaybackService.userStopped = false
                 pairBtn.text = "Pair"
                 r.onFailure { status.text = it.message }.onSuccess { sender ->
                     if (sender == null) {
@@ -251,11 +260,42 @@ class MainActivity : Activity() {
             "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
     }
 
+    /** One row per paired sender: connect, make it the automatic one, or forget it. Rebuilt only when the list changes. */
+    private fun showSenders() {
+        val list = store.all()
+        val def = store.defaultKey()
+        val sig = list.joinToString(";") { "${it.keyHex}${it.host}${it.port}" } + def
+        if (sig == sendersShown) return
+        sendersShown = sig
+        sendersBox.removeAllViews()
+        val dp = resources.displayMetrics.density
+        if (list.isEmpty()) {
+            sendersBox.addView(TextView(this).apply { text = "None yet. Type a pairing code above."; setTextColor(Color.parseColor("#9aa4ae")) })
+            return
+        }
+        for (p in list) {
+            sendersBox.addView(TextView(this).apply {
+                text = "${p.host}  (key ${p.keyHex.take(8)}…)" + if (p.keyHex == def) "  - default" else ""
+                setTextColor(Color.WHITE); setPadding(0, (8 * dp).toInt(), 0, 0)
+            })
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            fun btn(t: String, on: () -> Unit) = Button(this).apply { text = t; isAllCaps = false; setOnClickListener { on() } }
+                .also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
+            btn("Connect") { startReceiving(p.host, p.port, p.keyHex, null) }
+            if (p.keyHex != def) btn("Make default") { store.setDefault(p.keyHex) }
+            btn("Forget") {
+                store.remove(p.keyHex)
+                if (PlaybackService.running) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
+            }
+            sendersBox.addView(row)
+        }
+    }
+
     private fun tick() {
         val wantIdx = Controls.desiredCodec - 1
         if (quality.getChildAt(1).let { (it as Spinner).selectedItemPosition } != wantIdx) (quality.getChildAt(1) as Spinner).setSelection(wantIdx, false)
         button.text = if (PlaybackService.running) "Disconnect" else "Connect"
-        pairedInfo.text = store.paired()?.let { "Paired with ${it.host}:${it.port}  (agent key ${it.agentPublic.take(6).joinToString("") { b -> "%02x".format(b) }}…)  long-press to forget" } ?: "Not paired"
+        showSenders()
         if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = statsText()
         ui.postDelayed(::tick, 500)
     }
