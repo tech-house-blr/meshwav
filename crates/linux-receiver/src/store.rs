@@ -184,3 +184,14 @@ mod tests {
         assert!(parse_pair_link(&format!("meshwav://pair?pk={k}&code=123456")).is_err());
     }
 }
+
+/// This computer's host name, for the name shown in the agent's device list.
+pub fn host_name() -> String {
+    std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "linux".into())
+}
+
+/// The agent's address from a pair link.
+pub fn resolve(l: &PairLink) -> Result<SocketAddr, String> {
+    use std::net::ToSocketAddrs;
+    (l.host.as_str(), l.port).to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| format!("cannot resolve {}", l.host))
+}
