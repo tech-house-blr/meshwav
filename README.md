@@ -36,6 +36,8 @@ The packages need `libopus` and `pulseaudio-utils` (`parec`, `pactl`; they work 
 
 ## One program
 
+Run `meshwav` with no arguments for the window. It has a Receive / Send switch (the last choice is remembered; only one side runs at a time). Send starts and stops the `meshwav-agent` systemd user service, shows a pairing code with a 2-minute countdown, lists paired receivers (play here, rename, choose automatically) and edits the default quality (Opus or Lossless; the Opus bitrate and frame size are under it) and the keep-playing-locally setting in `~/.config/meshwav/config.toml`. If no service exists it offers to set one up for your user. The service keeps sending when the window is closed. The same things work from the command line:
+
 `meshwav` does both directions: `meshwav send` is the agent, `meshwav receive run|outputs|forget` is the receiver, and `meshwav pair`, `devices`, `use` and `rename` manage pairing and the active receiver. `meshwav-agent` and `meshwav-receiver` still work and run the same code. The receiver's files moved to `~/.config/meshwav/receiver`; an existing `~/.config/meshwav-receiver` is moved there the first time it runs. Release tarballs contain `meshwav`; the packages still install the two older commands (packaging for the single binary comes with the window).
 
 ## Play on a Linux computer (receiver)
@@ -78,7 +80,7 @@ loginctl enable-linger "$USER"         # optional: start at boot without logging
 
 It is a user service because it needs your audio session. If the tailnet is not up yet the agent exits and systemd retries every 5 s. Stopping it hands the PC's audio output back first.
 
-Settings live in `~/.config/meshwav/config.toml` (example: `packaging/config.toml.example`): `bind`, `kbps`, `frame_ms`, `source`, `no_redirect`, `log_level`. Flags override the file, and a typo or bad value stops the agent with the line number. Restart the service after editing it.
+Settings live in `~/.config/meshwav/config.toml` (example: `packaging/config.toml.example`): `bind`, `kbps`, `frame_ms`, `codec` (`opus` or `lossless`, what is sent until a receiver picks), `source`, `no_redirect`, `log_level`. Flags override the file, and a typo or bad value stops the agent with the line number. Restart the service after editing it.
 
 Several phones can be paired and connected at once; one gets the audio. With the agent running, from another terminal:
 
@@ -92,12 +94,12 @@ meshwav-agent rename "Phone name" "New name"
 
 The chosen device is remembered across restarts. A device that is not chosen never takes the stream from the active one.
 
-Common flags: `--bind IP:PORT`, `--kbps 160`, `--frame-ms 10`, `--source SINK.monitor`, `--no-redirect`, `--identity PATH`, `--authorized PATH`, `--config PATH`, `--log-level error|warn|info|debug`.
+Common flags: `--bind IP:PORT`, `--kbps 160`, `--frame-ms 10`, `--codec opus|lossless`, `--source SINK.monitor`, `--no-redirect`, `--identity PATH`, `--authorized PATH`, `--config PATH`, `--log-level error|warn|info|debug`.
 Full list at the top of `crates/desktop-agent/src/main.rs`.
 
 ## Android receiver
 
-Kotlin app in `apps/android` (Gradle). Build with `./gradlew assembleDebug` inside that directory. Enter the agent's tailnet IP and the pairing code.
+Kotlin app in `apps/android` (Gradle). Build with `./gradlew assembleDebug` inside that directory. Pair by typing only the 6-digit code: on the computer open a pairing window (`meshwav pair`, or Send, Show pairing code in the window), then on the phone choose Receive, type the code and tap Pair. While the window is open the sender tells waiting phones on the tailnet where it is, so no address or key is typed. A `meshwav://pair` link still works under "Use a pairing link instead". The app remembers every sender it has paired with. Under "Paired senders" you can Connect to one, Make default, or Forget it. With "Reconnect automatically" on (the default) it connects to the default sender whenever the app opens, so it shows as online without any tap; Disconnect stops it until you ask again, and tapping Pair always stops the current connection first so a new code is used. Lossless PCM is a Quality setting on the receiving side: in the phone app, and in the Linux receive window (or `meshwav receive run --lossless`).
 
 ## Tests
 

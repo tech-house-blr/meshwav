@@ -3,7 +3,7 @@
 //! bad value is an error at start-up, so a typo can never silently leave a setting at its default.
 use std::collections::HashMap;
 
-pub const KEYS: &[&str] = &["bind", "kbps", "frame_ms", "source", "no_redirect", "log_level"];
+pub const KEYS: &[&str] = &["bind", "kbps", "frame_ms", "codec", "source", "no_redirect", "log_level"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Config(HashMap<String, String>);

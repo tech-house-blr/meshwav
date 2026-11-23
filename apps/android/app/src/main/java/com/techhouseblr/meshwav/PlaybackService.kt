@@ -16,6 +16,8 @@ class PlaybackService : Service() {
         const val ACTION_STOP = "stop"
         const val CHANNEL = "playback"
         @Volatile var running = false
+        /** The user pressed Disconnect or Stop: do not reconnect by itself until they ask again. */
+        @Volatile var userStopped = false
     }
 
     private var receiver: StreamReceiver? = null
@@ -30,9 +32,14 @@ class PlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) { teardown(); return START_NOT_STICKY }
-        val host = intent?.getStringExtra("host") ?: ""
-        val port = intent?.getIntExtra("port", 47900) ?: 47900
+        val prefs = getSharedPreferences("mw", MODE_PRIVATE)
+        if (intent?.action == ACTION_STOP) { userStopped = true; teardown(); return START_NOT_STICKY }
+        // Restarted by the system without an intent: reconnect to the paired sender.
+        val saved = if (intent == null) PairingStore(applicationContext).paired() else null
+        if (intent == null && (saved == null || !prefs.getBoolean("auto", true))) { teardown(); return START_NOT_STICKY }
+        userStopped = false
+        val host = intent?.getStringExtra("host") ?: saved?.host ?: ""
+        val port = intent?.getIntExtra("port", 47900) ?: saved?.port ?: 47900
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Playback", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -43,7 +50,7 @@ class PlaybackService : Service() {
             .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause), "Stop", stop).build())
             .setOngoing(true).build()
         startForeground(1, n)
-        val pkHex = intent?.getStringExtra("pk") ?: ""
+        val pkHex = intent?.getStringExtra("pk") ?: saved?.agentPublic?.joinToString("") { "%02x".format(it) } ?: ""
         if (host.isEmpty() || !Regex("[0-9a-f]{64}").matches(pkHex)) { Stats.state = "Pairing error: bad agent key"; teardown(); return START_NOT_STICKY }
         val agentPk = Wire.hex(pkHex)
         val code = intent?.getStringExtra("code")?.takeIf { Handshake.validCode(it) }
@@ -54,11 +61,11 @@ class PlaybackService : Service() {
         receiver = StreamReceiver(
             host, port, store.identityPrivate(), agentPk, code, android.os.Build.MODEL ?: "Android",
             applicationContext,
-            onPaired = { store.savePaired(host, port, agentPk) },
+            onPaired = { store.savePaired(host, port, agentPk, makeDefault = code != null) },
         ).also { it.start() }
         if (code == null) store.savePaired(host, port, agentPk) // already paired: keep it current
         running = true
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun teardown() {

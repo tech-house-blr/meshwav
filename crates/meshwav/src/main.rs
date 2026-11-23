@@ -3,6 +3,7 @@
 const USAGE: &str = "meshwav: private low-latency audio over your tailnet
 
 usage:
+  meshwav                       open the window (Send and Receive)
   meshwav send [options]        send this computer's audio (runs until stopped)
   meshwav receive <command>     play audio sent by another device
       pair CODE | run | outputs | forget
@@ -17,6 +18,14 @@ usage:
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // No command, or a meshwav://pair link handed over by the desktop: open the window.
+    if args.len() == 1 || args.get(1).is_some_and(|a| a.starts_with("meshwav://")) {
+        if let Err(e) = meshwav_receiver_gui::run_window() {
+            eprintln!("meshwav: cannot open the window: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let rest = |n: usize| args.iter().skip(n).cloned().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
         Some("send") => meshwav_agent::run([vec!["meshwav send".to_string()], rest(2)].concat()),

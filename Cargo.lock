@@ -1780,8 +1780,10 @@ dependencies = [
 name = "meshwav"
 version = "0.2.0"
 dependencies = [
+ "audio-protocol",
  "meshwav-agent",
  "meshwav-receiver",
+ "meshwav-receiver-gui",
 ]
 
 [[package]]

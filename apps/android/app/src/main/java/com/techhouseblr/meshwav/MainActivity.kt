@@ -24,12 +24,16 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
     private lateinit var pairing: EditText
+    private lateinit var codeField: EditText
+    private lateinit var pairBtn: Button
+    private var invites: InviteListener? = null
     private lateinit var button: Button
     private lateinit var status: TextView
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var store: PairingStore
-    private lateinit var pairedInfo: TextView
+    private lateinit var sendersBox: LinearLayout
+    private var sendersShown = ""
     private lateinit var quality: LinearLayout
 
     /** What the agent prints when pairing: host, port, its public key and the one-time code. */
@@ -71,15 +75,32 @@ class MainActivity : Activity() {
         root.addView(modeRow)
         val real = root
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(TextView(this).apply { text = "Run meshwav-agent --pair on the PC, then paste its pairing line here. It is needed once; the pairing is remembered."; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, pad / 2) })
+        root.addView(TextView(this).apply { text = "On the computer choose Send and Show pairing code (or run meshwav pair), then type the 6-digit code here. It is needed once; the pairing is remembered."; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, pad / 2) })
+        codeField = EditText(this).apply {
+            hint = "123456"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE); textSize = 30f
+            inputType = InputType.TYPE_CLASS_NUMBER; filters = arrayOf(android.text.InputFilter.LengthFilter(6)); letterSpacing = 0.3f
+        }
+        root.addView(codeField)
+        pairBtn = Button(this).apply { text = "Pair"; setOnClickListener { pairByCode() } }
+        root.addView(pairBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad / 2 })
         pairing = EditText(this).apply {
             hint = "meshwav://pair?host=...&pk=...&code=123456"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 3
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 3; visibility = View.GONE
         }
+        root.addView(TextView(this).apply {
+            text = "Use a pairing link instead"; setTextColor(Color.parseColor("#7fd1ae")); setPadding(0, pad / 2, 0, pad / 2)
+            setOnClickListener { pairing.visibility = if (pairing.visibility == View.GONE) View.VISIBLE else View.GONE }
+        })
         root.addView(pairing)
-        pairedInfo = TextView(this).apply { setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, 0); setOnLongClickListener { store.forget(); true } }
-        root.addView(pairedInfo)
         val prefs = getSharedPreferences("mw", MODE_PRIVATE)
+        root.addView(TextView(this).apply { text = "Paired senders"; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, pad, 0, 0) })
+        sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(sendersBox)
+        root.addView(android.widget.CheckBox(this).apply {
+            text = "Reconnect automatically to the default sender"
+            setTextColor(Color.WHITE); isChecked = prefs.getBoolean("auto", true)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("auto", on).apply() }
+        })
         Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
         Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
         root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })
@@ -132,7 +153,53 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(req: Int, res: Int, data: Intent?) { source.onResult(req, res, data) }
 
-    override fun onResume() { super.onResume(); if (source.view.visibility == View.VISIBLE) source.start() }
+    override fun onResume() {
+        super.onResume()
+        if (source.view.visibility == View.VISIBLE) source.start() else autoConnect()
+    }
+
+    /** Stay connected to the paired sender so it shows this phone as online without tapping Connect. */
+    private fun autoConnect() {
+        if (PlaybackService.running || PlaybackService.userStopped || invites != null) return
+        if (!getSharedPreferences("mw", MODE_PRIVATE).getBoolean("auto", true)) return
+        val p = store.paired() ?: return
+        startReceiving(p.host, p.port, p.agentPublic.joinToString("") { "%02x".format(it) }, null)
+    }
+
+    private fun startReceiving(host: String, port: Int, pkHex: String, code: String?) {
+        val svc = Intent(this, PlaybackService::class.java).putExtra("host", host).putExtra("port", port).putExtra("pk", pkHex)
+        if (code != null) svc.putExtra("code", code)
+        startForegroundService(svc)
+    }
+
+    /** Wait for a sender that is showing a pairing code (it announces itself), then pair with the typed code. */
+    private fun pairByCode() {
+        invites?.let { it.cancel(); invites = null; pairBtn.text = "Pair"; status.text = ""; return }
+        val code = codeField.text.toString().trim()
+        if (!Handshake.validCode(code)) { status.text = "The pairing code is 6 digits."; return }
+        val l = InviteListener()
+        invites = l
+        if (PlaybackService.running) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
+        pairBtn.text = "Cancel"
+        status.text = "Looking for a sender showing this code. Open pairing on the computer now (waits about a minute)."
+        Thread {
+            val r = l.wait(60_000)
+            runOnUiThread {
+                if (invites !== l) return@runOnUiThread // cancelled
+                invites = null
+                PlaybackService.userStopped = false
+                pairBtn.text = "Pair"
+                r.onFailure { status.text = it.message }.onSuccess { sender ->
+                    if (sender == null) {
+                        status.text = "No sender showing a pairing code was found. On the computer choose Send and Show pairing code, then try again."
+                    } else {
+                        codeField.setText("")
+                        startReceiving(sender.host, sender.port, sender.publicKey.joinToString("") { "%02x".format(it) }, code)
+                    }
+                }
+            }
+        }.start()
+    }
     override fun onPause() { super.onPause(); source.stop() }
 
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); handleIntent(i) }
@@ -149,18 +216,16 @@ class MainActivity : Activity() {
             return
         }
         val text = pairing.text.toString()
-        val svc = Intent(this, PlaybackService::class.java)
         if (text.isNotBlank()) {
             val t = parse(text)
             if (t == null) { status.text = "Could not read the pairing line. It needs host, pk (64 hex) and the 6-digit code from the agent."; return }
-            svc.putExtra("host", t.host).putExtra("port", t.port).putExtra("pk", t.pk).putExtra("code", t.code)
             pairing.setText("") // the code is single-use; never keep it around
+            startReceiving(t.host, t.port, t.pk, t.code)
         } else {
             val p = store.paired()
-            if (p == null) { status.text = "Not paired yet. Run meshwav-agent --pair on the PC and paste the pairing line above."; return }
-            svc.putExtra("host", p.host).putExtra("port", p.port).putExtra("pk", p.agentPublic.joinToString("") { "%02x".format(it) })
+            if (p == null) { status.text = "Not paired yet. Type the pairing code above."; return }
+            startReceiving(p.host, p.port, p.agentPublic.joinToString("") { "%02x".format(it) }, null)
         }
-        startForegroundService(svc)
     }
 
     /** A labelled drop-down. [onPick] fires only for user changes, not for the initial selection. */
@@ -195,11 +260,42 @@ class MainActivity : Activity() {
             "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
     }
 
+    /** One row per paired sender: connect, make it the automatic one, or forget it. Rebuilt only when the list changes. */
+    private fun showSenders() {
+        val list = store.all()
+        val def = store.defaultKey()
+        val sig = list.joinToString(";") { "${it.keyHex}${it.host}${it.port}" } + def
+        if (sig == sendersShown) return
+        sendersShown = sig
+        sendersBox.removeAllViews()
+        val dp = resources.displayMetrics.density
+        if (list.isEmpty()) {
+            sendersBox.addView(TextView(this).apply { text = "None yet. Type a pairing code above."; setTextColor(Color.parseColor("#9aa4ae")) })
+            return
+        }
+        for (p in list) {
+            sendersBox.addView(TextView(this).apply {
+                text = "${p.host}  (key ${p.keyHex.take(8)}…)" + if (p.keyHex == def) "  - default" else ""
+                setTextColor(Color.WHITE); setPadding(0, (8 * dp).toInt(), 0, 0)
+            })
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            fun btn(t: String, on: () -> Unit) = Button(this).apply { text = t; isAllCaps = false; setOnClickListener { on() } }
+                .also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
+            btn("Connect") { startReceiving(p.host, p.port, p.keyHex, null) }
+            if (p.keyHex != def) btn("Make default") { store.setDefault(p.keyHex) }
+            btn("Forget") {
+                store.remove(p.keyHex)
+                if (PlaybackService.running) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
+            }
+            sendersBox.addView(row)
+        }
+    }
+
     private fun tick() {
         val wantIdx = Controls.desiredCodec - 1
         if (quality.getChildAt(1).let { (it as Spinner).selectedItemPosition } != wantIdx) (quality.getChildAt(1) as Spinner).setSelection(wantIdx, false)
         button.text = if (PlaybackService.running) "Disconnect" else "Connect"
-        pairedInfo.text = store.paired()?.let { "Paired with ${it.host}:${it.port}  (agent key ${it.agentPublic.take(6).joinToString("") { b -> "%02x".format(b) }}…)  long-press to forget" } ?: "Not paired"
+        showSenders()
         if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = statsText()
         ui.postDelayed(::tick, 500)
     }

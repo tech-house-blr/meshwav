@@ -18,7 +18,7 @@ usage:
   {PROG} pair CODE [--name NAME]
       Pair once. Type the 6-digit code the sender is showing; the sender is found on your tailnet.
       A meshwav://pair link works too.
-  {PROG} run [--latency-ms N] [--device SINK]
+  {PROG} run [--latency-ms N] [--device SINK] [--lossless]
   {PROG} outputs
       Connect to the paired agent and play. Reconnects by itself. Ctrl-C stops and hands the agent's audio back.
   {PROG} forget
@@ -28,6 +28,7 @@ options:
   --dir PATH         settings folder (default ~/.config/meshwav/receiver)
   --name NAME        device name shown in the agent's list (default: this computer's host name)
   --device SINK      play to this sound-card output instead of the default (names from `outputs`)
+  --lossless         with `run`: ask the sender for uncompressed audio (about 1.7 Mbit/s) instead of Opus
   --latency-ms N     output buffer asked of the sound server, 10-500 (default 40)
   --output FILE      with `run`: write raw s16le 48 kHz stereo to FILE (`-` = stdout) instead of playing
 ";
@@ -51,6 +52,13 @@ fn die(msg: impl std::fmt::Display) -> ! {
 pub fn run_cli(program: &str, args: Vec<String>) {
     let _ = PROG.set(program.to_string());
     let mut args = args;
+    let lossless = match args.iter().position(|a| a == "--lossless") {
+        Some(i) => {
+            args.remove(i);
+            true
+        }
+        None => false,
+    };
     let mut flag = |name: &str| -> Option<String> {
         let i = args.iter().position(|a| a == name)?;
         if i + 1 >= args.len() {
@@ -106,6 +114,7 @@ pub fn run_cli(program: &str, args: Vec<String>) {
                 None => Box::new(Pacat::start(latency, device.as_deref()).unwrap_or_else(|e| die(e))),
             };
             let status = Status::default();
+            status.set_lossless(lossless);
             let mut last = String::new();
             let result = std::thread::scope(|sc| {
                 let h = sc.spawn(|| run(&s, sink, &STOP, &status));

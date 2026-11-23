@@ -77,3 +77,50 @@ fn send_then_pair_a_receiver_and_list_it_with_the_one_program() {
     let _ = std::fs::remove_dir_all(&sender);
     let _ = std::fs::remove_dir_all(&receiver);
 }
+
+/// The receiver asks a real sender for lossless and back to Opus while audio flows.
+#[test]
+fn a_receiver_can_switch_a_real_sender_between_opus_and_lossless() {
+    use meshwav_receiver::store::{parse_pair_link, resolve};
+    use meshwav_receiver::{pair, run, Settings, Status};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let sender = home("codec-sender");
+    let port = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut child = meshwav(&sender)
+        .args(["send", "--bind", &format!("127.0.0.1:{port}"), "--source", "fake.monitor", "--pair"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let _agent = Kill(child);
+    let mut lines = BufReader::new(out).lines().map_while(Result::ok);
+    let link = lines.by_ref().find(|l| l.contains("meshwav://pair?")).expect("pairing link"); // keep `lines` alive: a closed pipe would kill the sender
+    let l = parse_pair_link(&link).unwrap();
+    let s = Settings { agent: resolve(&l).unwrap(), agent_key: l.key, identity: audio_protocol::handshake::Keypair::generate(), name: "codec-rx".into() };
+    pair(&s, &l.code, &AtomicBool::new(false)).expect("pairing");
+
+    let (stop, status) = (Arc::new(AtomicBool::new(false)), Arc::new(Status::default()));
+    let (s2, st2, sa2) = (s, stop.clone(), status.clone());
+    let t = std::thread::spawn(move || run(&s2, Box::new(|_: &[i16]| { std::thread::sleep(Duration::from_millis(4)); Ok(()) }), &st2, &sa2));
+    let wait = |want: bool| {
+        let end = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < end {
+            let sn = status.snapshot();
+            if sn.lossless == want && sn.frame_ms != 0 && sn.state == "Playing" {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    };
+    assert!(wait(false), "starts as Opus: {:?}", status.snapshot());
+    status.set_lossless(true);
+    assert!(wait(true), "lossless was not granted: {:?}", status.snapshot());
+    status.set_lossless(false);
+    assert!(wait(false), "did not go back to Opus: {:?}", status.snapshot());
+    stop.store(true, Ordering::Relaxed);
+    t.join().unwrap().unwrap();
+}
