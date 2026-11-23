@@ -1,7 +1,7 @@
 # Maintainer: Shreyas Salankimatt <shreyassalankimatt@gmail.com>
 # Arch / AUR recipe for the Linux receiver. Builds from the tagged source. Set sha256sums per release (`updpkgsums`).
 pkgname=meshwav-receiver
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Play audio streamed from a Meshwav agent over Tailscale"
 arch=('x86_64' 'aarch64')

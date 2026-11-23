@@ -2,7 +2,7 @@
 # Arch / AUR recipe. Builds from the tagged source. Set sha256sums to the tarball's hash for each release
 # (`updpkgsums`); SKIP is only for local testing.
 pkgname=meshwav-agent
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Stream this computer's audio to a paired phone over Tailscale"
 arch=('x86_64' 'aarch64')
