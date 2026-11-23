@@ -1,0 +1,22 @@
+[package]
+name = "meshwav-receiver"
+description = "Meshwav Linux receiver: plays an agent's audio stream through the local sound server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "meshwav_receiver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "meshwav-receiver"
+path = "src/main.rs"
+
+[dependencies]
+audio-protocol = { path = "../audio-protocol" }
+audio-codec = { path = "../audio-codec" }
+audio-transport = { path = "../audio-transport" }
+getrandom = { version = "0.2", features = ["std"] }
+libc = "0.2"

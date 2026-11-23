@@ -34,6 +34,23 @@ meshwav-agent pair
 
 The packages need `libopus` and `pulseaudio-utils` (`parec`, `pactl`; they work with PipeWire too) and install the binary, the user unit, a man page and an example config. Tailscale must run on both devices. They are not in the distributions' own repositories, so there is no `apt install meshwav-agent` without the file yet. Release binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 
+## Play on a Linux computer (receiver)
+
+`meshwav-receiver` plays an agent's stream on another Linux machine, the way the Android app does (same handshake, jitter buffer, Opus and lossless PCM, loss concealment). It needs `pacat` (`pulseaudio-utils`, also works with PipeWire) for sound.
+
+```sh
+# on the agent's machine: open a 2-minute pairing window and copy the `pair:` link it prints
+meshwav-agent pair
+
+# on the receiving machine, once
+meshwav-receiver pair 'meshwav://pair?host=100.x.y.z&port=47900&pk=...&code=123456'
+
+# then, any time
+meshwav-receiver run
+```
+
+Only the active device gets the audio. With several receivers paired, choose with `meshwav-agent use <name>`; the others show "Standby" and take over when chosen. Ctrl-C stops the receiver and hands the agent's audio back. `--output FILE` writes the received audio as raw 48 kHz stereo s16le instead of playing it (for machines without a sound server). The receiver connects only to tailnet or loopback addresses. There is no window yet and the package is not built into releases yet; build it with `cargo build --release -p meshwav-receiver`.
+
 ## Build and run (Linux agent)
 
 Requirements: Rust (stable), `parec`/`pactl` (PulseAudio or PipeWire-pulse), Tailscale running on both devices.
