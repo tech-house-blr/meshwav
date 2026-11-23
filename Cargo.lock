@@ -1782,6 +1782,7 @@ version = "0.2.0"
 dependencies = [
  "meshwav-agent",
  "meshwav-receiver",
+ "meshwav-receiver-gui",
 ]
 
 [[package]]

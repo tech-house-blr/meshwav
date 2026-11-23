@@ -13,3 +13,4 @@ path = "src/main.rs"
 [dependencies]
 meshwav-agent = { path = "../desktop-agent" }
 meshwav-receiver = { path = "../linux-receiver" }
+meshwav-receiver-gui = { path = "../linux-receiver-gui" }

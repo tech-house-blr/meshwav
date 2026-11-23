@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "meshwav_receiver_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "meshwav-receiver-gui"
 path = "src/main.rs"

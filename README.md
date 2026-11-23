@@ -36,6 +36,8 @@ The packages need `libopus` and `pulseaudio-utils` (`parec`, `pactl`; they work 
 
 ## One program
 
+Run `meshwav` with no arguments for the window. It has a Receive / Send switch (the last choice is remembered; only one side runs at a time). Send starts and stops the `meshwav-agent` systemd user service, shows a pairing code with a 2-minute countdown, lists paired receivers (play here, rename, choose automatically) and edits the bitrate, frame size and keep-playing-locally settings in `~/.config/meshwav/config.toml`. If no service exists it offers to set one up for your user. The service keeps sending when the window is closed. The same things work from the command line:
+
 `meshwav` does both directions: `meshwav send` is the agent, `meshwav receive run|outputs|forget` is the receiver, and `meshwav pair`, `devices`, `use` and `rename` manage pairing and the active receiver. `meshwav-agent` and `meshwav-receiver` still work and run the same code. The receiver's files moved to `~/.config/meshwav/receiver`; an existing `~/.config/meshwav-receiver` is moved there the first time it runs. Release tarballs contain `meshwav`; the packages still install the two older commands (packaging for the single binary comes with the window).
 
 ## Play on a Linux computer (receiver)
