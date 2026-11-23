@@ -181,7 +181,6 @@ This includes end-to-end tests that start the real sender and receive from it, a
 | `crates/audio-codec` | Opus and PCM codecs |
 | `crates/audio-capture` | Audio capture |
 | `crates/audio-transport` | UDP transport, Tailscale peer list, tailnet-only address checks |
-| `crates/discovery` | Peer discovery helpers |
 | `crates/android-spike` | The Android sending path as a native library loaded over JNI |
 | `apps/android` | The Android app |
 | `packaging/` | deb, rpm and Arch packaging, the systemd unit, the man page |
