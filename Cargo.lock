@@ -74,7 +74,7 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
 name = "android-spike"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audio-codec",
  "audio-protocol",
@@ -180,7 +180,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-codec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audiopus",
  "claxon",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "audio-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "audio-transport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audio-protocol",
 ]
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "meshwav"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audio-protocol",
  "meshwav-agent",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "meshwav-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audio-codec",
  "audio-protocol",
@@ -1799,7 +1799,7 @@ dependencies = [
 
 [[package]]
 name = "meshwav-receiver"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "audio-codec",
  "audio-protocol",
@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "meshwav-receiver-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "eframe",
  "ksni",

@@ -3,7 +3,7 @@
 Private, low-latency system-audio streaming between your own devices over Tailscale: a Linux computer or an Android phone sends, a Linux computer or an Android phone plays.
 No cloud, no relay servers, no third-party services.
 
-**Status: early development.** Sending from Linux, receiving on Android or Linux, and sending from an Android phone work end to end on a tailnet. Releases exist (v0.1.0, v0.2.0), but the single `meshwav` package described below is on `main` and not in a release yet. Windows is not implemented, latency has not reached its target (see [docs/measurements.md](docs/measurements.md)), and the security design has not had an external review.
+**Status: early development.** Sending from Linux, receiving on Android or Linux, and sending from an Android phone work end to end on a tailnet. Releases are on GitHub (v0.3.0 is the first with the single `meshwav` package described below). Windows is not implemented, latency has not reached its target (see [docs/measurements.md](docs/measurements.md)), and the security design has not had an external review.
 See [docs/milestones.md](docs/milestones.md) for what is done and what is open.
 
 ## How it works
@@ -15,7 +15,7 @@ See [docs/milestones.md](docs/milestones.md) for what is done and what is open.
 
 ## Install (Linux)
 
-One package, `meshwav`, does both directions: the window, the sender and the receiver. Packages are meant to be attached to each [GitHub release](https://github.com/tech-house-blr/meshwav/releases) for x86_64 and aarch64. The existing releases (up to v0.2.0) still hold the older separate `meshwav-agent` and `meshwav-receiver` packages; the single package comes with the next release, and until then you can build it (`packaging/build-deb.sh`, `build-rpm.sh`, `PKGBUILD`):
+One package, `meshwav`, does both directions: the window, the sender and the receiver. Packages are attached to each [GitHub release](https://github.com/tech-house-blr/meshwav/releases) (v0.3.0 is the first with the single package) for x86_64 and aarch64:
 
 ```sh
 sudo apt install ./meshwav_VERSION_ARCH.deb      # Debian, Ubuntu, Raspberry Pi OS
