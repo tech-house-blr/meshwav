@@ -17,7 +17,8 @@ const USAGE: &str = "meshwav-receiver: play a Meshwav agent's audio on this comp
 usage:
   meshwav-receiver pair 'meshwav://pair?host=...&port=...&pk=...&code=123456' [--name NAME]
       Pair with an agent once. On the agent's machine run `meshwav-agent pair` and pass its `pair:` link here.
-  meshwav-receiver run [--latency-ms N]
+  meshwav-receiver run [--latency-ms N] [--device SINK]
+  meshwav-receiver outputs
       Connect to the paired agent and play. Reconnects by itself. Ctrl-C stops and hands the agent's audio back.
   meshwav-receiver forget
       Forget the paired agent.
@@ -25,6 +26,7 @@ usage:
 options:
   --dir PATH         settings folder (default ~/.config/meshwav-receiver)
   --name NAME        device name shown in the agent's list (default: this computer's host name)
+  --device SINK      play to this sound-card output instead of the default (names from `outputs`)
   --latency-ms N     output buffer asked of the sound server, 10-500 (default 40)
   --output FILE      with `run`: write raw s16le 48 kHz stereo to FILE (`-` = stdout) instead of playing
 ";
@@ -54,6 +56,7 @@ fn main() {
         },
     };
     let output = flag("--output");
+    let device = flag("--device");
     let cmd = args.first().cloned().unwrap_or_default();
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -62,23 +65,32 @@ fn main() {
     let identity = || store::load_or_create_identity(&dir).unwrap_or_else(|e| die(format!("identity: {e}")));
     match cmd.as_str() {
         "pair" => {
-            let link = args.get(1).unwrap_or_else(|| die("pair needs the agent's pair: link"));
-            let l = store::parse_pair_link(link).unwrap_or_else(|e| die(e));
-            let agent = store::resolve(&l).unwrap_or_else(|e| die(e));
-            let s = Settings { agent, agent_key: l.key, identity: identity(), name };
-            eprintln!("pairing with {agent} ...");
-            if let Err(e) = pair(&s, &l.code, &STOP) {
-                die(e);
+            let arg = args.get(1).unwrap_or_else(|| die("pair needs the 6-digit code shown by the sender (or a meshwav://pair link)"));
+            let paired = if arg.contains("meshwav://") {
+                let l = store::parse_pair_link(arg).unwrap_or_else(|e| die(e));
+                let agent = store::resolve(&l).unwrap_or_else(|e| die(e));
+                let s = Settings { agent, agent_key: l.key, identity: identity(), name };
+                eprintln!("pairing with {agent} ...");
+                pair(&s, &l.code, &STOP).map(|_| Paired { agent, key: l.key })
+            } else {
+                eprintln!("looking for the device showing code {arg} ...");
+                meshwav_receiver::discover::pair_with_code(arg.trim(), identity(), name, &STOP)
+            };
+            let p = paired.unwrap_or_else(|e| die(e));
+            store::save_paired(&dir, &p).unwrap_or_else(|e| die(format!("saving the pairing: {e}")));
+            println!("paired with {}. Start playing with: meshwav-receiver run", p.agent);
+        }
+        "outputs" => {
+            for o in meshwav_receiver::sink::list_outputs() {
+                println!("{}\t{}", o.name, o.description);
             }
-            store::save_paired(&dir, &Paired { agent, key: l.key }).unwrap_or_else(|e| die(format!("saving the pairing: {e}")));
-            println!("paired with {agent}. Start playing with: meshwav-receiver run");
         }
         "run" => {
             let p = store::load_paired(&dir).unwrap_or_else(|e| die(e)).unwrap_or_else(|| die("not paired yet; see `meshwav-receiver pair`"));
             let s = Settings { agent: p.agent, agent_key: p.key, identity: identity(), name };
             let sink: Box<dyn Sink> = match &output {
                 Some(f) => Box::new(RawFile::create(f).unwrap_or_else(|e| die(format!("--output: {e}")))),
-                None => Box::new(Pacat::start(latency).unwrap_or_else(|e| die(e))),
+                None => Box::new(Pacat::start(latency, device.as_deref()).unwrap_or_else(|e| die(e))),
             };
             let status = Status::default();
             let mut last = String::new();

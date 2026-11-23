@@ -2,7 +2,7 @@
 //! computer is playing or on standby, and set the volume. The audio engine is the same library the
 //! command-line receiver uses.
 use eframe::egui::{self, Color32, FontId, RichText, TextStyle};
-use meshwav_receiver::sink::{Gain, Pacat, Volume};
+use meshwav_receiver::sink::{list_outputs, Gain, Output, Pacat, Volume};
 use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Snapshot, Status};
 use std::path::PathBuf;
@@ -113,6 +113,8 @@ struct App {
     worker: Option<Worker>,
     volume: Arc<Volume>,
     slider: u32,
+    outputs: Vec<Output>,
+    device: String,
     link: String,
     pairing: Option<Pairing>,
     message: Option<(String, Color32)>,
@@ -120,6 +122,10 @@ struct App {
     tray: Option<ksni::blocking::Handle<Tray>>,
     tray_cmds: Receiver<TrayCmd>,
     tray_state: String,
+}
+
+fn device_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("output")
 }
 
 fn volume_path(dir: &std::path::Path) -> PathBuf {
@@ -139,6 +145,7 @@ impl App {
         };
         let dir = store::default_dir();
         let paired = store::load_paired(&dir).ok().flatten();
+        let device = std::fs::read_to_string(device_path(&dir)).unwrap_or_default().trim().to_string();
         let start_volume = std::fs::read_to_string(volume_path(&dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100u32).min(100);
         let mut app = App {
             dir,
@@ -147,6 +154,8 @@ impl App {
             worker: None,
             volume: Volume::new(start_volume),
             slider: start_volume,
+            outputs: list_outputs(),
+            device,
             link: String::new(),
             pairing: None,
             message: None,
@@ -155,6 +164,10 @@ impl App {
             tray_cmds: rx,
             tray_state: String::new(),
         };
+        // A meshwav://pair link on the command line (the desktop file registers the scheme) fills in the field.
+        if let Some(l) = std::env::args().skip(1).find(|a| a.contains("meshwav://pair?")) {
+            app.link = l;
+        }
         if app.paired.is_some() {
             app.start();
         }
@@ -167,7 +180,7 @@ impl App {
             Ok(i) => i,
             Err(e) => return self.fail(format!("identity: {e}")),
         };
-        let sink = match Pacat::start(40) {
+        let sink = match Pacat::start(40, Some(&self.device)) {
             Ok(s) => s,
             Err(e) => return self.fail(e.to_string()),
         };
@@ -191,28 +204,41 @@ impl App {
     }
 
     fn begin_pairing(&mut self) {
-        let link = match store::parse_pair_link(self.link.trim()) {
-            Ok(l) => l,
-            Err(e) => return self.fail(e),
-        };
-        let agent = match store::resolve(&link) {
-            Ok(a) => a,
-            Err(e) => return self.fail(e),
-        };
+        let text = self.link.trim().to_string();
         let identity = match store::load_or_create_identity(&self.dir) {
             Ok(i) => i,
             Err(e) => return self.fail(format!("identity: {e}")),
         };
         let name: String = self.name.trim().chars().take(32).collect();
-        let settings = Settings { agent, agent_key: link.key, identity, name: if name.is_empty() { store::host_name() } else { name } };
+        let name = if name.is_empty() { store::host_name() } else { name };
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let st = stop.clone();
-        std::thread::spawn(move || {
-            let r = pair(&settings, &link.code, &st).map(|_| Paired { agent, key: link.key });
-            let _ = tx.send(r);
-        });
-        self.message = Some(("Pairing, this can take up to 10 seconds".into(), MUTED));
+        if text.contains("meshwav://") {
+            // A full link (from the command line or pasted): the address and key are in it.
+            let link = match store::parse_pair_link(&text) {
+                Ok(l) => l,
+                Err(e) => return self.fail(e),
+            };
+            let agent = match store::resolve(&link) {
+                Ok(a) => a,
+                Err(e) => return self.fail(e),
+            };
+            let settings = Settings { agent, agent_key: link.key, identity, name };
+            std::thread::spawn(move || {
+                let r = pair(&settings, &link.code, &st).map(|_| Paired { agent, key: link.key });
+                let _ = tx.send(r);
+            });
+        } else {
+            let code: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+                return self.fail("The pairing code is 6 digits".into());
+            }
+            std::thread::spawn(move || {
+                let _ = tx.send(meshwav_receiver::discover::pair_with_code(&code, identity, name, &st));
+            });
+        }
+        self.message = Some(("Looking for the device and pairing, this can take up to 15 seconds".into(), MUTED));
         self.pairing = Some(Pairing { stop, done: rx });
     }
 
@@ -323,6 +349,13 @@ impl eframe::App for App {
             }
         }
         self.sync_tray();
+        // A paste (Ctrl+V or the Paste button) on the pairing screen goes into the link field even if it is not focused.
+        if self.paired.is_none() && self.pairing.is_none() {
+            let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None }));
+            if let Some(t) = pasted.filter(|t| t.contains("meshwav://pair?")) {
+                self.link = t.split_whitespace().collect::<String>();
+            }
+        }
         ctx.request_repaint_after(Duration::from_millis(250));
         egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(22.0))).show(ctx, |ui| {
             ui.label(RichText::new("Meshwav").heading().strong());
@@ -363,20 +396,19 @@ impl App {
     }
 
     fn pairing_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Not paired with an agent yet.").color(MUTED));
+        ui.label(RichText::new("Not paired with a sender yet.").color(MUTED));
         ui.add_space(10.0);
-        ui.label("On the computer running the agent, run:");
-        ui.label(RichText::new("meshwav-agent pair").monospace().color(ACCENT));
-        ui.label("then paste the link it prints (it starts with meshwav://pair). The code in it works for 2 minutes.");
-        ui.add_space(6.0);
+        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav-agent pair` on a computer). It shows a 6-digit code. Type it here.");
+        ui.add_space(8.0);
         let busy = self.pairing.is_some();
         ui.add_enabled_ui(!busy, |ui| {
-            ui.label(RichText::new("Pair link").color(MUTED));
-            ui.add(egui::TextEdit::singleline(&mut self.link).desired_width(f32::INFINITY).hint_text("meshwav://pair?host=...&port=...&pk=...&code=...").font(TextStyle::Monospace));
-            ui.label(RichText::new("Name shown on the agent").color(MUTED));
-            ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(240.0));
+            ui.label(RichText::new("Pairing code").color(MUTED));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.link).desired_width(180.0).hint_text("123456").font(egui::FontId::monospace(26.0)));
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.link.trim().is_empty() {
+                self.begin_pairing();
+            }
         });
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             if busy {
                 if ui.button("Cancel").clicked() {
@@ -409,6 +441,30 @@ impl App {
         ui.separator();
         ui.add_space(4.0);
 
+        ui.label(RichText::new("Output").color(MUTED));
+        if self.outputs.is_empty() {
+            ui.label(RichText::new("System default (no list available)").color(MUTED));
+        } else {
+            let label = |d: &str, o: &[Output]| if d.is_empty() { "System default".to_string() } else { o.iter().find(|x| x.name == d).map(|x| x.description.clone()).unwrap_or_else(|| format!("{d} (not found)")) };
+            let before = self.device.clone();
+            egui::ComboBox::from_id_salt("output").width(ui.available_width() - 8.0).selected_text(label(&self.device, &self.outputs)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.device, String::new(), "System default");
+                for o in &self.outputs {
+                    ui.selectable_value(&mut self.device, o.name.clone(), &o.description);
+                }
+            });
+            if self.device != before {
+                let _ = std::fs::write(device_path(&self.dir), &self.device);
+                if running {
+                    self.stop();
+                    self.start();
+                }
+            }
+            if ui.small_button("Refresh list").clicked() {
+                self.outputs = list_outputs();
+            }
+        }
+        ui.add_space(8.0);
         ui.label(RichText::new("Volume").color(MUTED));
         ui.horizontal(|ui| {
             let r = ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false));

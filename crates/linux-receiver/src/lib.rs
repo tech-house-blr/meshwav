@@ -3,6 +3,7 @@
 //! afterwards), adaptive jitter buffer, Opus or lossless PCM, loss concealment.
 
 pub mod conceal;
+pub mod discover;
 pub mod jitter;
 pub mod session;
 pub mod sink;

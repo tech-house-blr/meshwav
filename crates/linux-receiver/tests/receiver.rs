@@ -352,3 +352,18 @@ fn opus_streams_are_decoded_and_played() {
     let hz = crossings as f32 / 2.0 / seconds;
     assert!((420.0..=460.0).contains(&hz), "measured {hz} Hz");
 }
+
+#[test]
+fn a_sender_is_found_only_while_it_shows_a_code_and_pairs_with_just_the_code() {
+    use meshwav_receiver::discover::probe;
+    let agent = Agent::start();
+    let id = Keypair::generate();
+    assert!(probe(&[agent.addr], Duration::from_millis(700)).is_empty(), "a closed sender must stay silent");
+    agent.open_pairing("654321");
+    let found = probe(&[agent.addr], Duration::from_millis(1500));
+    assert_eq!(found.len(), 1);
+    assert_eq!((found[0].addr, found[0].key), (agent.addr, agent.key));
+    // The key came from the probe, not from the user.
+    let s = Settings { agent: found[0].addr, agent_key: found[0].key, identity: id, name: "test pc".into() };
+    pair(&s, "654321", &AtomicBool::new(false)).expect("pairing with a discovered key");
+}

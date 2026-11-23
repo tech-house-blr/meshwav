@@ -16,6 +16,42 @@ impl<F: FnMut(&[i16]) -> io::Result<()> + Send> Sink for F {
     }
 }
 
+/// A playback device the sound server offers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub name: String,
+    pub description: String,
+}
+
+/// Parse `pactl list sinks`, skipping Meshwav's own capture sink. Empty when pactl is missing.
+pub fn parse_outputs(text: &str) -> Vec<Output> {
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    for line in text.lines() {
+        let l = line.trim();
+        if let Some(n) = l.strip_prefix("Name: ") {
+            name = Some(n.to_string());
+        } else if let Some(d) = l.strip_prefix("Description: ") {
+            if let Some(n) = name.take() {
+                if n != "meshwav" && !n.ends_with(".monitor") {
+                    out.push(Output { name: n, description: d.to_string() });
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn list_outputs() -> Vec<Output> {
+    Command::new("pactl")
+        .args(["list", "sinks"])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()
+        .map(|o| parse_outputs(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
 pub struct Pacat {
     child: Child,
     stdin: ChildStdin,
@@ -23,10 +59,14 @@ pub struct Pacat {
 }
 
 impl Pacat {
-    pub fn start(latency_ms: u32) -> io::Result<Self> {
-        let mut child = Command::new("pacat")
-            .args(["--playback", "--raw", "--format=s16le", "--rate=48000", "--channels=2"])
-            .arg(format!("--latency-msec={latency_ms}"))
+    /// `device` is a sink name from [`list_outputs`]; `None` follows the system default.
+    pub fn start(latency_ms: u32, device: Option<&str>) -> io::Result<Self> {
+        let mut cmd = Command::new("pacat");
+        cmd.args(["--playback", "--raw", "--format=s16le", "--rate=48000", "--channels=2"]).arg(format!("--latency-msec={latency_ms}"));
+        if let Some(d) = device.filter(|d| !d.is_empty()) {
+            cmd.arg(format!("--device={d}"));
+        }
+        let mut child = cmd
             .args(["--client-name=Meshwav", "--stream-name=Meshwav stream"])
             .stdin(Stdio::piped())
             .spawn()
@@ -128,6 +168,14 @@ impl<S: Sink> Sink for Gain<S> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn outputs_skip_meshwav_and_monitors() {
+        let t = "Sink #1\n\tName: alsa_output.usb-A\n\tDescription: Headphones\n\tMonitor Source: x.monitor\nSink #2\n\tName: meshwav\n\tDescription: Null Output\nSink #3\n\tName: alsa_output.hdmi\n\tDescription: HDMI\n";
+        let o = super::parse_outputs(t);
+        assert_eq!(o.iter().map(|x| x.description.as_str()).collect::<Vec<_>>(), ["Headphones", "HDMI"]);
+        assert!(super::parse_outputs("").is_empty());
+    }
+
     use super::*;
     use std::sync::Mutex;
 
