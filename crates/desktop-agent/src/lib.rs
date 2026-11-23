@@ -2,7 +2,7 @@
 //! that most recently completed a Noise handshake. The receiver keeps the session alive with
 //! sealed `Punch` packets about once a second; the agent stops sending after `PEER_TIMEOUT`.
 //!
-//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10] [--config PATH] [--log-level LEVEL]
+//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10] [--codec opus|lossless] [--config PATH] [--log-level LEVEL]
 //!
 //! Redirect (default): while a receiver is connected, the default output becomes a virtual "Meshwav"
 //! sink and every stream is moved onto it, so the PC plays nothing locally. The previous output is
@@ -467,6 +467,12 @@ pub fn run(args: Vec<String>) {
     };
     let kbps = number("--kbps", "kbps", 160);
     let frame_ms = number("--frame-ms", "frame_ms", 10);
+    // What is sent until a receiver asks for something else.
+    let start_codec = match setting("--codec", "codec").as_deref() {
+        None | Some("opus") => CODEC_OPUS,
+        Some("lossless") => CODEC_PCM,
+        Some(v) => fatal(&format!("{}: `{v}` must be opus or lossless", origin("--codec", "codec"))),
+    };
     if let Some(v) = setting("--log-level", "log_level") {
         log::set_level(log::parse_level(&v).unwrap_or_else(|| fatal(&format!("{}: `{v}` is not one of error, warn, info, debug", origin("--log-level", "log_level")))));
     }
@@ -536,8 +542,8 @@ pub fn run(args: Vec<String>) {
     });
 
     let mut enc = OpusEncoder::new(frame_ms * 1000, kbps, false).expect("encoder");
-    let mut frame_samples = enc.frame_samples();
-    let (mut cur_kbps, mut cur_frame_ms, mut cur_codec) = (kbps, frame_ms, CODEC_OPUS);
+    let mut frame_samples = if start_codec == CODEC_PCM { PCM_FRAME_BYTES / 4 } else { enc.frame_samples() };
+    let (mut cur_kbps, mut cur_frame_ms, mut cur_codec) = (kbps, frame_ms, start_codec);
 
     let preferred_path = cfg_dir.join("active_peer");
     let session: Arc<Mutex<Fleet>> = Arc::new(Mutex::new(Fleet {

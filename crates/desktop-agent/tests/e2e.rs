@@ -668,3 +668,32 @@ fn a_bad_config_stops_the_agent_with_the_reason() {
         assert!(err.contains(want) && err.contains("config.toml"), "{err}");
     }
 }
+
+#[test]
+fn codec_setting_starts_lossless_until_a_receiver_asks_for_opus() {
+    let dir = workdir("codec-default");
+    write_config(&dir, "codec = lossless\n");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+    let evs = l.pump(800);
+    let pcm: Vec<_> = evs.iter().filter_map(|e| if let Ev::Audio { pcm, frame_ms, len, .. } = e { Some((*pcm, *frame_ms, *len)) } else { None }).collect();
+    assert!(pcm.len() > 40, "audio flows: {}", pcm.len());
+    assert!(pcm.iter().all(|&(p, f, n)| p && f == 5 && n == 960), "lossless from the first packet: {:?}", &pcm[..3]);
+    let (reply, after) = l.request(Message::SetConfig { req: 1, kbps: 0, frame_ms: 0, codec: 1 }, 1);
+    assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 160, frame_ms: 10, codec: 1 });
+    let mut evs = after;
+    evs.extend(l.pump(800));
+    let tail: Vec<_> = evs.iter().rev().take(30).collect();
+    assert!(tail.iter().all(|e| matches!(e, Ev::Audio { pcm: false, frame_ms: 10, len, .. } if *len < 960)), "a receiver can still pick Opus");
+    drop(agent);
+
+    let dir = workdir("codec-bad");
+    write_config(&dir, "codec = flac\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_meshwav-agent")).env("HOME", &dir).args(["--bind", "127.0.0.1:0", "--source", "x.monitor"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("must be opus or lossless"), "{}", String::from_utf8_lossy(&out.stderr));
+}

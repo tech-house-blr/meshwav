@@ -9,6 +9,8 @@
 # Opus bitrate (kbit/s, 64-256) and frame size (5, 10 or 20 ms). The phone can change these at runtime.
 # kbps = 160
 # frame_ms = 10
+# What to send until a receiver chooses for itself: opus or lossless (about 1.7 Mbit/s).
+# codec = opus
 
 # Capture from this source instead of redirecting all audio. Setting it turns the redirect off.
 # source = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"

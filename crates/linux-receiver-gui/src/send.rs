@@ -164,6 +164,7 @@ pub struct SendPanel {
     exe: PathBuf,
     kbps: u32,
     frame_ms: u32,
+    lossless: bool,
     keep_local: bool,
 }
 
@@ -184,6 +185,7 @@ impl SendPanel {
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("meshwav")),
             kbps: get_key(&text, "kbps").and_then(|v| v.parse().ok()).unwrap_or(160).clamp(64, 256),
             frame_ms: get_key(&text, "frame_ms").and_then(|v| v.parse().ok()).filter(|v| [5, 10, 20].contains(v)).unwrap_or(10),
+            lossless: get_key(&text, "codec").as_deref() == Some("lossless"),
             keep_local: get_key(&text, "no_redirect").as_deref() == Some("true"),
         }
     }
@@ -273,6 +275,7 @@ impl SendPanel {
         let text = std::fs::read_to_string(&self.config).unwrap_or_default();
         let text = set_key(&text, "kbps", Some(&self.kbps.to_string()));
         let text = set_key(&text, "frame_ms", Some(&self.frame_ms.to_string()));
+        let text = set_key(&text, "codec", self.lossless.then_some("lossless"));
         let text = set_key(&text, "no_redirect", self.keep_local.then_some("true"));
         if let Some(parent) = self.config.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -423,17 +426,29 @@ impl SendPanel {
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new(RichText::new("Settings").color(MUTED)).id_salt("send-settings").show(ui, |ui| {
-            ui.label(RichText::new("Opus bitrate").color(MUTED));
+            ui.label(RichText::new("Default quality").color(MUTED));
             ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut self.kbps, 64..=256).show_value(false));
-                ui.label(RichText::new(format!("{} kbit/s", self.kbps)).monospace());
+                ui.selectable_value(&mut self.lossless, false, "Opus");
+                ui.selectable_value(&mut self.lossless, true, "Lossless PCM");
             });
-            ui.label(RichText::new("Frame size").color(MUTED));
-            ui.horizontal(|ui| {
-                for ms in [5u32, 10, 20] {
-                    ui.selectable_value(&mut self.frame_ms, ms, format!("{ms} ms"));
-                }
-            });
+            ui.label(RichText::new("What is sent until a receiver asks for something else. A receiver's own quality choice always wins.").color(MUTED));
+            if self.lossless {
+                ui.label(RichText::new("Lossless is about 1.7 Mbit/s in 5 ms packets.").color(MUTED));
+            } else {
+                egui::CollapsingHeader::new(RichText::new("Opus details").color(MUTED)).id_salt("send-opus").show(ui, |ui| {
+                    ui.label(RichText::new("Bitrate").color(MUTED));
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Slider::new(&mut self.kbps, 64..=256).show_value(false));
+                        ui.label(RichText::new(format!("{} kbit/s", self.kbps)).monospace());
+                    });
+                    ui.label(RichText::new("Frame size").color(MUTED));
+                    ui.horizontal(|ui| {
+                        for ms in [5u32, 10, 20] {
+                            ui.selectable_value(&mut self.frame_ms, ms, format!("{ms} ms"));
+                        }
+                    });
+                });
+            }
             ui.checkbox(&mut self.keep_local, "Keep playing on this computer too");
             let label = if self.is_running() { "Save and restart the sender" } else { "Save" };
             if ui.button(label).clicked() {
