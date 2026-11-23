@@ -1,6 +1,7 @@
 # Built from a prebuilt binary by packaging/build-rpm.sh. Library dependencies (libopus) are found automatically.
 %global debug_package %{nil}
 %global __strip /bin/true
+%global _build_id_links none
 
 Name:           meshwav-agent
 Version:        %{pkgversion}
