@@ -39,7 +39,7 @@ class PlaybackService : Service() {
         val stop = PendingIntent.getService(this, 1, Intent(this, PlaybackService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, CHANNEL)
             .setContentTitle("Meshwav").setContentText("Streaming from $host")
-            .setSmallIcon(android.R.drawable.ic_media_play).setContentIntent(open)
+            .setSmallIcon(R.drawable.ic_stat_meshwav).setContentIntent(open)
             .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause), "Stop", stop).build())
             .setOngoing(true).build()
         startForeground(1, n)
