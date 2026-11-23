@@ -13,6 +13,6 @@
 | 9 | PipeWire/WASAPI differences | Platform bugs | `CaptureSource` trait with conformance tests; per-OS CI. |
 | 10 | Opus JNI / FLAC native build complexity | Build friction | Prebuilt NDK static libs built via script in scripts/; pinned versions. |
 | 11 | AudioTrack latency higher than expected | Target missed | Measure early (M3); switch to Oboe/AAudio if needed. |
-| 12 | Discovery on tailnet (no mDNS) | Weaker UX | Query Tailscale peers, probe port; manual IP always works. |
+| 12 | Discovery on tailnet (no mDNS) | Weaker UX | Done for pairing: `tailscale status` lists peers, a probe or invite finds the sender showing a code. The pairing link still works as a fallback. |
 | 13 | Noise/AEAD implementation errors | Security | Use audited crates (snow, RustCrypto); test vectors; no custom crypto. |
 | 14 | Power use of constant 10 ms packets | Phone battery | Measure; allow 20 ms frames; Wi-Fi low-latency lock. |

@@ -374,7 +374,7 @@ fn headline(running: bool, s: &Snapshot) -> (&'static str, Color32, String) {
         return ("Stopped", MUTED, "Not connected to the agent.".into());
     }
     if s.standby {
-        return ("Standby", WARN, "The agent is sending audio to another device. Choose this one with `meshwav-agent use`.".into());
+        return ("Standby", WARN, "The agent is sending audio to another device. Choose this one with `meshwav use`.".into());
     }
     match s.state.as_str() {
         "Playing" => ("Playing", ACCENT, String::new()),
@@ -464,7 +464,7 @@ impl App {
     fn pairing_screen(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Not paired with a sender yet.").color(MUTED));
         ui.add_space(10.0);
-        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav-agent pair` on a computer). It shows a 6-digit code. Type it here.");
+        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav pair` on a computer). It shows a 6-digit code. Type it here.");
         ui.add_space(8.0);
         let busy = self.pairing.is_some();
         ui.add_enabled_ui(!busy, |ui| {

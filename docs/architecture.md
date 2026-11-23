@@ -43,10 +43,14 @@ flowchart LR
 - audio-capture: `CaptureSource` trait + backends (windows-wasapi, linux-pipewire, macOS later). Real-time callback only copies into a lock-free ring buffer.
 - audio-codec: `Encoder`/`Decoder` traits; Opus (libopus bindings), FLAC, PCM.
 - audio-transport: tokio UDP sender, pacing, bounded send queue, stats.
-- discovery: enumerates tailnet peers (Tailscale LocalAPI), probes agent port, verifies identity.
-- desktop-agent: binary; wires modules, config (TOML), service units (systemd user, Windows service), logging, CLI diagnostics.
+- discovery: there is no separate crate. `audio-transport` reads online peers from `tailscale status`, and pairing probes them (see protocol.md, "Pairing discovery"). Identity is only ever established by key pinning.
+- desktop-agent: library behind `meshwav send`; capture, encode, send, receiver selection, redirect, config (flat TOML), control socket, logging. Runs as a systemd user service. (A Windows service is not built.)
+- linux-receiver: library behind `meshwav receive`; handshake, jitter buffer, concealment, Opus and PCM decode, playback through `pacat`.
+- linux-receiver-gui: the window (egui) with the Receive / Send switch, and the tray icon.
+- meshwav: the single binary that dispatches to the window, the sender and the receiver. `meshwav-agent` and `meshwav-receiver` are thin compatibility binaries.
+- android-spike: the sending path (pairing, handshake, Opus or PCM, sealed UDP) as a library loaded by the Android app through JNI for its Send mode.
 
-Android (apps/android): Kotlin + Jetpack Compose, modules `net`, `codec` (JNI libopus, FLAC decoder), `jitter`, `playback`, `ui`. The Rust protocol crate is NOT shared via JNI initially; the protocol is specified in docs and tested with shared test vectors (docs/vectors/), avoiding a cross-language FFI in the audio path.
+Android (apps/android): Kotlin + Jetpack Compose, modules `net`, `codec` (JNI libopus, FLAC decoder), `jitter`, `playback`, `ui`. The receive path is Kotlin and does not use the Rust protocol crate: the protocol is specified in docs and tested with shared test vectors (docs/vectors/), avoiding a cross-language FFI in the audio path. Only the Send mode loads the Rust code (`android-spike`) through JNI.
 
 ## 3. Threading and backpressure
 - Capture callback (OS RT thread): copy to SPSC ring (fixed capacity, ~100 ms). Never allocates, locks or does I/O. On overflow: drop oldest, increment counter.
@@ -57,7 +61,7 @@ Android (apps/android): Kotlin + Jetpack Compose, modules `net`, `codec` (JNI li
 ## 4. Latency budget (direct path, Opus 10 ms)
 capture buffer 10 + encode 10 (frame) + network 2-10 + jitter buffer 20 + decode <1 + AudioTrack low-latency 10-20 = about 55-70 ms.
 Lossless adds no codec delay for PCM and 5-10 ms for FLAC blocks, but needs a larger jitter buffer on weak links.
-Targets: p50 <= 60 ms, p95 <= 80 ms direct; <= 120 ms on DERP relay. Wired USB DAC assumed; Bluetooth output adds 100-200 ms and is outside the target (UI warns).
+Targets (not met yet: the click-loopback test measured p50 91.5 ms for PCM and 114.9 ms for Opus to the phone, see measurements.md): p50 <= 60 ms, p95 <= 80 ms direct; <= 120 ms on DERP relay. Wired USB DAC assumed; Bluetooth output adds 100-200 ms and is outside the target (UI warns).
 Reliability: < 1 audible glitch/hour at <= 0.5% loss; PLC concealment at up to 5% loss; reconnect within 3 s of a network blip.
 Resources: agent < 3% of one core (Opus), < 5% (lossless); Android < 5% CPU, < 50 MB RSS.
 
@@ -80,4 +84,4 @@ Library comparison (decisions)
 - Format changes mid-stream (e.g. mixer rate change) trigger a StreamConfig renegotiation; the receiver rebuilds the AudioTrack with a short mute.
 
 ## 7. Repo layout
-See README. Cargo workspace at root; Android Gradle project in apps/android; docs/vectors for cross-language test vectors; scripts/ for latency and loss measurement tools.
+See README. Cargo workspace at root (`crates/`; packaging in `packaging/`); Android Gradle project in apps/android; docs/vectors for cross-language test vectors; scripts/ for latency and loss measurement tools.
