@@ -2,6 +2,7 @@
 //! The receiving side mirrors the Android app: Noise handshake (pairing code once, pinned agent key
 //! afterwards), adaptive jitter buffer, Opus or lossless PCM, loss concealment.
 
+pub mod cli;
 pub mod conceal;
 pub mod discover;
 pub mod jitter;

@@ -1,15 +1,38 @@
-//! On-disk state of the receiver under `~/.config/meshwav-receiver/` (or `--dir`): its own identity key
+//! On-disk state of the receiver under `~/.config/meshwav/receiver/` (or `--dir`): its own identity key
 //! and the one agent it is paired with. Files are written with mode 0600 (atomic replace).
 use audio_protocol::handshake::{hex, Keypair, PublicKey};
 use std::io::{Error, ErrorKind, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+/// The receiver's folder: `~/.config/meshwav/receiver`, next to the sender's files. Older versions
+/// used `~/.config/meshwav-receiver` (or the same under `$XDG_CONFIG_HOME`); that folder is moved
+/// across the first time, so an existing pairing and identity key carry over.
 pub fn default_dir() -> PathBuf {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let dir = home.join(".config/meshwav/receiver");
+    let mut old = vec![home.join(".config/meshwav-receiver")];
     if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        return PathBuf::from(x).join("meshwav-receiver");
+        old.insert(0, PathBuf::from(x).join("meshwav-receiver"));
     }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/meshwav-receiver")
+    migrate(&dir, &old);
+    dir
+}
+
+/// Move the first existing `old` folder to `dir` if `dir` does not exist yet. Never overwrites.
+pub fn migrate(dir: &Path, old: &[PathBuf]) {
+    if dir.exists() {
+        return;
+    }
+    let Some(from) = old.iter().find(|o| o.is_dir()) else { return };
+    if let Some(parent) = dir.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    if let Err(e) = std::fs::rename(from, dir) {
+        eprintln!("meshwav: could not move {} to {}: {e}", from.display(), dir.display());
+    }
 }
 
 fn bad(msg: impl Into<String>) -> Error {
@@ -192,6 +215,26 @@ mod tests {
         assert!(!forget(&d).unwrap());
         assert_eq!(load_paired(&d).unwrap(), None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn old_folder_moves_across_once_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("mw-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let old = base.join("meshwav-receiver");
+        let new = base.join("meshwav/receiver");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("identity"), b"key").unwrap();
+        migrate(&new, &[old.clone()]);
+        assert_eq!(std::fs::read(new.join("identity")).unwrap(), b"key");
+        assert!(!old.exists());
+        // a second old folder must not replace the existing one
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("identity"), b"other").unwrap();
+        migrate(&new, &[old.clone()]);
+        assert_eq!(std::fs::read(new.join("identity")).unwrap(), b"key");
+        assert!(old.exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
