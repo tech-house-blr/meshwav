@@ -44,3 +44,12 @@ Findings:
 - Kotlin: 10 tests (wire bytes identical to the Rust literals, strict decoding, retry, give-up, refusal, stale reply, new session) and 3 jitter buffer tests at 5, 10 and 20 ms (clean link: no concealment; 3% loss: concealed frames within 2-6% of the frames sent; depth never above 200 ms).
 - Interop: the Kotlin code, run on liberation, switched the real Rust agent to 96 kbit/s and 20 ms frames, saw them announced in the audio flags, and got a refusal for 999 kbit/s.
 - Not measured: how smooth the switch sounds on the phone (the jitter buffer is flushed on a frame-size change), and whether 5 ms frames hold up over Wi-Fi (more than 200 packets per second). Latency at each frame size is M4c work.
+
+## Pre-public check (2026-11-23, main at f849aa9)
+
+- `cargo test --workspace` on the Pi (aarch64): 76 passed, 0 failed. Per target: audio-codec 10, audio-protocol handshake 13 and protocol 22, audio-transport 1, meshwav-agent 22 unit and 8 end-to-end (real binary with a fake `parec`).
+- GitHub Actions (ubuntu-latest, `cargo test --workspace`) passed on PR #7 in 1m20s.
+- Tracked files grepped for keys and secrets: none found (tailnet range literals in docs and tests only). All commits are authored by one person.
+- The agent built from this commit started on liberation and an already-paired phone (SM-S938B) reconnected with its pinned key and redirect took over audio, observed in the agent log.
+- Not measured: end-to-end PC-to-phone latency, the phone's pairing UI flow from a fresh install, and behaviour on Windows.
+
