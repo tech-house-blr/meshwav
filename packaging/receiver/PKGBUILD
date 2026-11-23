@@ -1,0 +1,41 @@
+# Maintainer: Shreyas Salankimatt <shreyassalankimatt@gmail.com>
+# Arch / AUR recipe for the Linux receiver. Builds from the tagged source. Set sha256sums per release (`updpkgsums`).
+pkgname=meshwav-receiver
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Play audio streamed from a Meshwav agent over Tailscale"
+arch=('x86_64' 'aarch64')
+url="https://github.com/tech-house-blr/meshwav"
+license=('Apache-2.0')
+depends=('opus' 'libpulse' 'libxkbcommon' 'libglvnd')
+optdepends=('wayland: Wayland window' 'libx11: X11 window' 'tailscale: the network the agent and the receiver talk over')
+makedepends=('cargo' 'cmake' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "meshwav-$pkgver"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "meshwav-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo build --release --frozen -p meshwav-receiver -p meshwav-receiver-gui
+}
+
+check() {
+    cd "meshwav-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo test --release --frozen -p meshwav-receiver -p meshwav-receiver-gui
+}
+
+package() {
+    cd "meshwav-$pkgver"
+    install -Dm755 target/release/meshwav-receiver "$pkgdir/usr/bin/meshwav-receiver"
+    install -Dm755 target/release/meshwav-receiver-gui "$pkgdir/usr/bin/meshwav-receiver-gui"
+    install -Dm644 packaging/receiver/meshwav-receiver.desktop "$pkgdir/usr/share/applications/meshwav-receiver.desktop"
+    install -Dm644 crates/linux-receiver-gui/assets/icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/meshwav-receiver.png"
+    install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/meshwav-receiver.svg"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
