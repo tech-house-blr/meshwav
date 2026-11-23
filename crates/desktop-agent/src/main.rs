@@ -435,6 +435,11 @@ fn main() {
     let frame_ms: u32 = arg(&args, "--frame-ms")
         .map(|v| v.parse().expect("--frame-ms"))
         .unwrap_or(10);
+    let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
+    let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
+    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename")) {
+        client(&args, &control_path);
+    }
     let bind = arg(&args, "--bind").unwrap_or_else(|| match tailscale_ip() {
         Some(ip) => format!("{ip}:{DEFAULT_PORT}"),
         None => {
@@ -442,11 +447,6 @@ fn main() {
             std::process::exit(2);
         }
     });
-    let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
-    let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
-    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename")) {
-        client(&args, &control_path);
-    }
     let identity_path = arg(&args, "--identity").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("identity"));
     let authorized_path = arg(&args, "--authorized").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("authorized_peers"));
     if args.iter().any(|a| a == "--key-file") {
