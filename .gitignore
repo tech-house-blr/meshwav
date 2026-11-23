@@ -4,3 +4,4 @@ target/
 apps/android/build/
 apps/android/.gradle/
 local.properties
+dist/

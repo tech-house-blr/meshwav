@@ -14,6 +14,26 @@ See [docs/milestones.md](docs/milestones.md) for what is done and what is open.
 - Devices pair once with a six-digit code (Noise handshake). Keys are then pinned and each session gets fresh keys. Packets are authenticated and encrypted (ChaCha20-Poly1305) with a replay window.
 - The receiver uses an adaptive jitter buffer, loss concealment and automatic reconnect.
 
+## Install (Linux agent)
+
+Packages are attached to each [GitHub release](https://github.com/tech-house-blr/meshwav/releases) for x86_64 and aarch64:
+
+```sh
+sudo apt install ./meshwav-agent_VERSION_ARCH.deb      # Debian, Ubuntu, Raspberry Pi OS
+sudo dnf install ./meshwav-agent-VERSION-1.ARCH.rpm    # Fedora, openSUSE (zypper install)
+```
+
+Arch: `packaging/PKGBUILD` builds the tagged source (`makepkg -si`). It is not on the AUR yet.
+
+Then, as your normal user:
+
+```sh
+systemctl --user enable --now meshwav-agent
+meshwav-agent pair
+```
+
+The packages need `libopus` and `pulseaudio-utils` (`parec`, `pactl`; they work with PipeWire too) and install the binary, the user unit, a man page and an example config. Tailscale must run on both devices. They are not in the distributions' own repositories, so there is no `apt install meshwav-agent` without the file yet. Release binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
+
 ## Build and run (Linux agent)
 
 Requirements: Rust (stable), `parec`/`pactl` (PulseAudio or PipeWire-pulse), Tailscale running on both devices.
