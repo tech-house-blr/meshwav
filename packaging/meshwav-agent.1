@@ -1,0 +1,66 @@
+.TH MESHWAV-AGENT 1 "" "meshwav-agent" "User Commands"
+.SH NAME
+meshwav-agent \- stream this computer's audio to a paired phone over Tailscale
+.SH SYNOPSIS
+.B meshwav-agent
+[\fIOPTIONS\fR]
+.br
+.B meshwav-agent
+.RB { devices | pair | use " \fIDEVICE\fR|auto" | rename " \fIDEVICE NEWNAME\fR }"
+.SH DESCRIPTION
+Captures the system audio with parec, encodes it (Opus, or lossless PCM) and sends it, encrypted, over UDP to a paired receiver on the tailnet.
+While a receiver is connected the default output is redirected to a virtual sink, so this computer plays nothing locally. It is handed back when the receiver leaves and when the agent exits.
+The agent only listens on a tailnet or loopback address.
+.PP
+Run it as a user service: \fBsystemctl --user enable --now meshwav-agent\fR.
+.SH COMMANDS
+These talk to the running agent over an owner-only socket (\fI~/.config/meshwav/control.sock\fR).
+.TP
+.B devices
+List paired devices: online, active or standby.
+.TP
+.B pair
+Open a 2-minute pairing window and print a 6-digit code for the app.
+.TP
+.BR use " \fIDEVICE\fR|auto"
+Send the audio to one device (name, name prefix or key prefix). \fBauto\fR lets the first connected device keep it.
+.TP
+.BR rename " \fIDEVICE NEWNAME\fR"
+Rename a paired device.
+.SH OPTIONS
+.TP
+.BI \-\-bind " IP:PORT"
+Address to listen on (default: tailscale IPv4, port 47900).
+.TP
+.BI \-\-kbps " N"
+Opus bitrate, 64\-256 (default 160).
+.TP
+.BI \-\-frame\-ms " N"
+Opus frame size: 5, 10 or 20 (default 10).
+.TP
+.BI \-\-source " SINK.monitor"
+Capture from this source and do not redirect.
+.TP
+.B \-\-no\-redirect
+Leave the local audio output alone.
+.TP
+.BI \-\-config " PATH"
+Settings file (default \fI~/.config/meshwav/config.toml\fR).
+.TP
+.BI \-\-log\-level " LEVEL"
+error, warn, info or debug.
+.TP
+.B \-\-pair
+Open a pairing window at start-up.
+.TP
+.BI \-\-identity " PATH" ", " \-\-authorized " PATH"
+Key and paired-device files.
+.SH FILES
+.TP
+.I ~/.config/meshwav/config.toml
+Flat key = value settings: bind, kbps, frame_ms, source, no_redirect, log_level. See \fI/usr/share/doc/meshwav-agent/config.toml.example\fR.
+.TP
+.I ~/.config/meshwav/{identity,authorized_peers,active_peer}
+The agent's key, the paired devices and the chosen device.
+.SH SEE ALSO
+https://github.com/tech-house-blr/meshwav

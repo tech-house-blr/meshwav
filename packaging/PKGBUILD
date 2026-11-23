@@ -1,0 +1,41 @@
+# Maintainer: Shreyas Salankimatt <shreyassalankimatt@gmail.com>
+# Arch / AUR recipe. Builds from the tagged source. Set sha256sums to the tarball's hash for each release
+# (`updpkgsums`); SKIP is only for local testing.
+pkgname=meshwav-agent
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Stream this computer's audio to a paired phone over Tailscale"
+arch=('x86_64' 'aarch64')
+url="https://github.com/tech-house-blr/meshwav"
+license=('Apache-2.0')
+depends=('opus' 'libpulse')
+makedepends=('cargo' 'cmake' 'pkgconf')
+optdepends=('tailscale: the network the agent and the phone talk over')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "meshwav-$pkgver"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "meshwav-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo build --release --frozen -p meshwav-agent
+}
+
+check() {
+    cd "meshwav-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo test --release --frozen -p meshwav-agent
+}
+
+package() {
+    cd "meshwav-$pkgver"
+    install -Dm755 target/release/meshwav-agent "$pkgdir/usr/bin/meshwav-agent"
+    install -Dm644 packaging/systemd/meshwav-agent.service "$pkgdir/usr/lib/systemd/user/meshwav-agent.service"
+    install -Dm644 packaging/config.toml.example "$pkgdir/usr/share/doc/$pkgname/config.toml.example"
+    install -Dm644 packaging/meshwav-agent.1 "$pkgdir/usr/share/man/man1/meshwav-agent.1"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
