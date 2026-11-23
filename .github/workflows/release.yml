@@ -27,23 +27,24 @@ jobs:
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
-      - run: cargo build --release --locked -p meshwav -p meshwav-agent -p meshwav-receiver -p meshwav-receiver-gui
+      - run: cargo build --release --locked -p meshwav
       - name: Packages
         run: |
-          sh packaging/build-deb.sh target/release/meshwav-agent dist
-          sh packaging/build-rpm.sh target/release/meshwav-agent dist
-          sh packaging/build-receiver-deb.sh target/release/meshwav-receiver target/release/meshwav-receiver-gui dist
-          sh packaging/build-receiver-rpm.sh target/release/meshwav-receiver target/release/meshwav-receiver-gui dist
+          sh packaging/build-deb.sh target/release/meshwav dist
+          sh packaging/build-rpm.sh target/release/meshwav dist
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          t=meshwav-agent-$v-linux-${{ matrix.arch }}
-          mkdir -p "$t" && cp target/release/meshwav-agent target/release/meshwav packaging/systemd/meshwav-agent.service packaging/config.toml.example LICENSE scripts/install-user-service.sh "$t/"
+          t=meshwav-$v-linux-${{ matrix.arch }}
+          mkdir -p "$t" && cp target/release/meshwav packaging/systemd/meshwav-agent.service packaging/config.toml.example LICENSE scripts/install-user-service.sh "$t/"
           tar czf "dist/$t.tar.gz" "$t"
       - name: Check the packages
         run: |
           for f in dist/*.deb; do dpkg-deb -I $f; dpkg-deb -c $f; done
           for f in dist/*.rpm; do rpm -qpi $f; rpm -qpl $f; rpm -qp --requires $f; done
-          dpkg-deb -x dist/meshwav-receiver_*.deb /tmp/rx && desktop-file-validate /tmp/rx/usr/share/applications/meshwav-receiver.desktop && /tmp/rx/usr/bin/meshwav-receiver --help | head -3
-          dpkg-deb -x dist/meshwav-agent_*.deb /tmp/deb && /tmp/deb/usr/bin/meshwav-agent --bind 127.0.0.1:1 --log-level nope 2>&1 | grep "not one of"
+          dpkg-deb -x dist/meshwav_*.deb /tmp/deb
+          desktop-file-validate /tmp/deb/usr/share/applications/meshwav.desktop
+          /tmp/deb/usr/bin/meshwav --help | head -3
+          /tmp/deb/usr/bin/meshwav send --bind 127.0.0.1:1 --log-level nope 2>&1 | grep "not one of"
+          grep -x "ExecStart=/usr/bin/meshwav send" /tmp/deb/usr/lib/systemd/user/meshwav-agent.service
       - run: cd dist && sha256sum * > SHA256SUMS-${{ matrix.arch }}.txt
       - uses: actions/upload-artifact@v4
         with:

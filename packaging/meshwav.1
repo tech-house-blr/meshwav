@@ -1,0 +1,89 @@
+.TH MESHWAV 1 "" "meshwav" "User Commands"
+.SH NAME
+meshwav \- private low-latency audio over your tailnet: send this computer's audio, or play audio sent from another device
+.SH SYNOPSIS
+.B meshwav
+.br
+.B meshwav send
+[\fIOPTIONS\fR]
+.br
+.B meshwav receive
+.RB { run | outputs | forget | "pair \\fICODE\\fR" }
+.br
+.B meshwav
+.RB { pair | "pair \\fICODE\\fR" | devices | use " \\fIDEVICE\\fR|auto" | rename " \\fIDEVICE NEWNAME\\fR }"
+.SH DESCRIPTION
+With no arguments it opens the window, which has a Receive / Send switch. Only one side runs at a time.
+.PP
+.B send
+captures the system audio with parec, encodes it (Opus, or lossless PCM) and sends it, encrypted, over UDP to the paired receiver that is active. While a receiver is connected the default output is redirected to a virtual sink, so this computer plays nothing locally; it is handed back when the receiver leaves and when the sender exits. It only listens on a tailnet or loopback address.
+Run it as a user service: \fBsystemctl --user enable --now meshwav-agent\fR (the window can set this up too).
+.PP
+.B receive
+plays audio sent by another device through PulseAudio or PipeWire.
+.SH COMMANDS
+The sender's commands talk to the running sender over an owner-only socket (\fI~/.config/meshwav/control.sock\fR).
+.TP
+.B pair
+Open a 2-minute pairing window and print a 6-digit code. Paired receivers on the tailnet are invited automatically; type the code on the receiver.
+.TP
+.BR "pair " \fICODE\fR
+Pair this computer as a receiver with the code a sender is showing.
+.TP
+.B devices
+List paired devices: online, active or standby.
+.TP
+.BR use " \\fIDEVICE\\fR|auto"
+Send the audio to one device (name, name prefix or key prefix). \fBauto\fR lets the first connected device keep it.
+.TP
+.BR rename " \\fIDEVICE NEWNAME\\fR"
+Rename a paired device.
+.TP
+.B receive run [\-\-device SINK] [\-\-lossless]
+Play the paired sender's stream. \fBreceive outputs\fR lists the sound outputs.
+.TP
+.B receive forget
+Forget the paired sender.
+.SH SEND OPTIONS
+.TP
+.BI \-\-bind " IP:PORT"
+Address to listen on (default: tailscale IPv4, port 47900).
+.TP
+.BI \-\-codec " opus|lossless"
+What is sent until a receiver asks for something else (default opus).
+.TP
+.BI \-\-kbps " N"
+Opus bitrate, 64\-256 (default 160).
+.TP
+.BI \-\-frame\-ms " N"
+Opus frame size: 5, 10 or 20 (default 10).
+.TP
+.BI \-\-source " SINK.monitor"
+Capture from this source and do not redirect.
+.TP
+.B \-\-no\-redirect
+Leave the local audio output alone.
+.TP
+.BI \-\-config " PATH"
+Settings file (default \fI~/.config/meshwav/config.toml\fR).
+.TP
+.BI \-\-log\-level " LEVEL"
+error, warn, info or debug.
+.TP
+.B \-\-pair
+Open a pairing window at start-up.
+.TP
+.BI \-\-identity " PATH" ", " \-\-authorized " PATH"
+Key and paired-device files.
+.SH FILES
+.TP
+.I ~/.config/meshwav/config.toml
+Flat key = value settings: bind, kbps, frame_ms, codec, source, no_redirect, log_level. See \fI/usr/share/doc/meshwav/config.toml.example\fR.
+.TP
+.I ~/.config/meshwav/{identity,authorized_peers,active_peer}
+The sender's key, the paired devices and the chosen device.
+.TP
+.I ~/.config/meshwav/receiver/
+The receiver's key, the paired sender, and its window settings.
+.SH SEE ALSO
+https://github.com/tech-house-blr/meshwav

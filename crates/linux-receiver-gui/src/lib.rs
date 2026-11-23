@@ -608,7 +608,7 @@ fn window_icon() -> egui::IconData {
 /// Open the window and run until it is closed.
 pub fn run_window() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title("Meshwav").with_app_id("meshwav-receiver"),
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title("Meshwav").with_app_id("meshwav"),
         ..Default::default()
     };
     eframe::run_native("Meshwav", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))

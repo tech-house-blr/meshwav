@@ -103,7 +103,7 @@ pub fn stop_service() -> Result<(), String> {
 /// The user unit for a copy of meshwav that is not installed from a package: the packaged unit with
 /// `ExecStart` pointing at this program's `send` command.
 pub fn unit_text(exe: &Path) -> String {
-    include_str!("../../../packaging/systemd/meshwav-agent.service").replace("ExecStart=/usr/bin/meshwav-agent", &format!("ExecStart={} send", exe.display()))
+    include_str!("../../../packaging/systemd/meshwav-agent.service").replace("ExecStart=/usr/bin/meshwav send", &format!("ExecStart={} send", exe.display()))
 }
 
 pub fn install_service(exe: &Path) -> Result<(), String> {
@@ -502,7 +502,7 @@ mod tests {
     fn unit_points_at_this_program() {
         let u = unit_text(Path::new("/opt/mw/meshwav"));
         assert!(u.contains("ExecStart=/opt/mw/meshwav send\n"));
-        assert!(!u.contains("ExecStart=/usr/bin/meshwav-agent"));
+        assert!(!u.contains("ExecStart=/usr/bin/meshwav send"));
     }
 
     #[test]
