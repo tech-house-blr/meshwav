@@ -5,7 +5,7 @@
 //! loopback addresses are ever probed.
 use audio_protocol::handshake::{self, PublicKey, KIND_HELLO};
 use audio_transport::is_tailnet_or_loopback;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// Agent port, and the phone's source port.
@@ -17,23 +17,7 @@ pub struct Found {
     pub key: PublicKey,
 }
 
-/// IPs of online peers from the text output of `tailscale status`.
-pub fn parse_peers(status: &str) -> Vec<IpAddr> {
-    status
-        .lines()
-        .filter(|l| !l.to_lowercase().contains("offline"))
-        .filter_map(|l| l.split_whitespace().next()?.parse::<IpAddr>().ok())
-        .filter(|ip| is_tailnet_or_loopback(*ip))
-        .collect()
-}
-
-fn tailnet_peers() -> Vec<IpAddr> {
-    let out = std::process::Command::new("tailscale").arg("status").output();
-    match out {
-        Ok(o) => parse_peers(&String::from_utf8_lossy(&o.stdout)),
-        Err(_) => vec![],
-    }
-}
+use audio_transport::tailnet_peers;
 
 /// Probe the given targets and return every sender that answered.
 pub fn probe(targets: &[SocketAddr], wait: Duration) -> Vec<Found> {
@@ -109,16 +93,4 @@ pub fn pair_with_code(
         }
     }
     Err(last)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peers_skip_offline_and_non_tailnet() {
-        let t = "100.72.29.9    liberation   me@  linux   -\n100.127.116.12 galaxy  me@ android offline, last seen 1h ago\n100.100.1.2 pi me@ linux active; direct\n192.168.1.5 lan x linux -\n# Health check:\n";
-        let p = parse_peers(t);
-        assert_eq!(p, vec!["100.72.29.9".parse::<IpAddr>().unwrap(), "100.100.1.2".parse().unwrap()]);
-    }
 }

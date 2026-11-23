@@ -14,3 +14,6 @@ path = "src/main.rs"
 meshwav-agent = { path = "../desktop-agent" }
 meshwav-receiver = { path = "../linux-receiver" }
 meshwav-receiver-gui = { path = "../linux-receiver-gui" }
+
+[dev-dependencies]
+audio-protocol = { path = "../audio-protocol" }

@@ -352,7 +352,7 @@ impl SendPanel {
             Some(c) => {
                 let left = c.until.saturating_duration_since(Instant::now()).as_secs();
                 ui.label(RichText::new(&c.code).monospace().size(40.0).color(ACCENT));
-                ui.label(RichText::new(format!("Type it on the receiver. Valid for {}:{:02}, one use.", left / 60, left % 60)).color(MUTED));
+                ui.label(RichText::new(format!("On a phone choose Receive, type the code and tap Pair. On a computer type it in the receive window. Valid for {}:{:02}, one use.", left / 60, left % 60)).color(MUTED));
                 let link = c.link.clone();
                 ui.horizontal(|ui| {
                     if ui.button("Copy link").clicked() {

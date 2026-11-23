@@ -5,7 +5,7 @@ use crate::conceal::Concealer;
 use crate::jitter::{Counters, JitterBuffer, Out};
 use crate::sink::Sink;
 use audio_codec::opus::OpusDecoder;
-use audio_protocol::control::{Message, PCM_FRAME_BYTES};
+use audio_protocol::control::{Message, CODEC_OPUS, CODEC_PCM, PCM_FRAME_BYTES};
 use audio_protocol::crypto::{Direction, Opener, Sealer};
 use audio_protocol::handshake::{self, Initiator, Keypair, PublicKey, KIND_XX, KIND_XXPSK3};
 use audio_protocol::packet::{frame_ms_from_flags, Header, PacketType, FLAG_PCM};
@@ -36,6 +36,8 @@ pub struct Snapshot {
     pub standby: bool,
     pub lossless: bool,
     pub frame_ms: u32,
+    /// Set when the sender refused or fell back from the requested codec.
+    pub note: String,
     pub counters: Counters,
     pub reconnects: u64,
     pub buffer_ms: u32,
@@ -45,14 +47,23 @@ pub struct Snapshot {
 
 /// Live state for the UI or the log; cheap to read from any thread.
 #[derive(Default)]
-pub struct Status(Mutex<Snapshot>);
+pub struct Status {
+    snap: Mutex<Snapshot>,
+    want_lossless: std::sync::atomic::AtomicBool,
+    /// The last `SetConfig` request the agent answered (applied or refused).
+    cfg_ack: std::sync::atomic::AtomicU16,
+}
 
 impl Status {
     pub fn snapshot(&self) -> Snapshot {
-        self.0.lock().unwrap().clone()
+        self.snap.lock().unwrap().clone()
+    }
+    /// Ask the agent for lossless PCM (`true`) or Opus (`false`). Applies live and is repeated after a reconnect.
+    pub fn set_lossless(&self, on: bool) {
+        self.want_lossless.store(on, Ordering::Relaxed);
     }
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
-        f(&mut self.0.lock().unwrap());
+        f(&mut self.snap.lock().unwrap());
     }
     fn state(&self, s: impl Into<String>) {
         self.update(|x| x.state = s.into());
@@ -316,6 +327,9 @@ pub fn run(s: &Settings, sink: Box<dyn Sink>, stop: &AtomicBool, status: &Status
 fn punch_loop(sh: &Shared) {
     let (mut n, mut next, mut cur) = (0u32, 0u64, 0usize);
     let mut errors = 0;
+    // Codec requests: a new series starts when the wish changes or the connection is rebuilt, and runs
+    // until the agent answers it (or 10 tries), so a sender that refuses is not asked forever.
+    let (mut want_seen, mut req, mut tries, mut cfg_next) = (false, 0u16, 0u32, 0u64);
     while !sh.stop.load(Ordering::Relaxed) {
         let live = sh.live.lock().unwrap().clone();
         if let Some(l) = live {
@@ -324,8 +338,23 @@ fn punch_loop(sh: &Shared) {
                 cur = id;
                 n = 0;
                 next = 0;
+                tries = 0;
+                req = req.wrapping_add(1).max(1);
             }
             let now = sh.now();
+            let want = sh.status.want_lossless.load(Ordering::Relaxed);
+            if want != want_seen {
+                want_seen = want;
+                tries = 0;
+                req = req.wrapping_add(1).max(1);
+            }
+            if want != sh.status.snapshot().lossless && tries < 10 && sh.status.cfg_ack.load(Ordering::Relaxed) != req && now >= cfg_next {
+                let codec = if want { CODEC_PCM } else { CODEC_OPUS };
+                let m = Message::SetConfig { req, kbps: 0, frame_ms: 0, codec };
+                let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &m.encode()));
+                tries += 1;
+                cfg_next = now + 500;
+            }
             if now >= next {
                 match l.punch() {
                     Ok(()) => errors = 0,
@@ -406,6 +435,17 @@ fn recv_loop(sh: &Shared, s: &Settings) -> Result<(), String> {
         last_alive = now;
         match h.ptype {
             PacketType::Control => {
+                match Message::decode(&payload) {
+                    Ok(Some((Message::ConfigApplied { req, codec, .. }, _))) => {
+                        sh.status.cfg_ack.store(req, Ordering::Relaxed);
+                        sh.status.update(|x| x.note = if (codec == CODEC_PCM) != sh.status.want_lossless.load(Ordering::Relaxed) { "The sender is using a different codec than requested".into() } else { String::new() });
+                    }
+                    Ok(Some((Message::ConfigRejected { req, .. }, _))) => {
+                        sh.status.cfg_ack.store(req, Ordering::Relaxed);
+                        sh.status.update(|x| x.note = "The sender refused the codec change".into());
+                    }
+                    _ => {}
+                }
                 if let Ok(Some((Message::ActiveState { active }, _))) = Message::decode(&payload) {
                     if !active {
                         standby = true;

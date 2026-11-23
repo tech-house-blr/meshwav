@@ -13,6 +13,9 @@ class SessionKeys(val toAgent: ByteArray, val toReceiver: ByteArray, val agentPu
 object Handshake {
     const val KIND_XX = 0x10
     const val KIND_XXPSK3 = 0x11
+    const val KIND_INVITE = 0x13
+    /** Where a waiting phone listens for a sender that has its pairing window open. */
+    const val INVITE_PORT = 47902
     private const val FRAME_HEADER = 9
     private val rng = SecureRandom()
 
@@ -28,6 +31,15 @@ object Handshake {
         if ((d[3].toInt() and 0xff) != kind || (d[8].toInt() and 0xff) != 2) return null
         if (ByteBuffer.wrap(d, 4, 4).int != sid) return null
         return d.copyOfRange(FRAME_HEADER, len)
+    }
+
+    /** The sender's public key and port from an invite datagram (see `invite_frame` in audio-protocol), or null. */
+    fun parseInvite(d: ByteArray, len: Int): Pair<ByteArray, Int>? {
+        if (len != FRAME_HEADER + 34 || d[0] != 'M'.code.toByte() || d[1] != 'W'.code.toByte() || d[2].toInt() != 1) return null
+        if ((d[3].toInt() and 0xff) != KIND_INVITE || (d[8].toInt() and 0xff) != 1) return null
+        val port = ((d[FRAME_HEADER + 32].toInt() and 0xff) shl 8) or (d[FRAME_HEADER + 33].toInt() and 0xff)
+        if (port == 0) return null
+        return d.copyOfRange(FRAME_HEADER, FRAME_HEADER + 32) to port
     }
 
     fun pairingPsk(agentPublic: ByteArray, code: String): ByteArray {

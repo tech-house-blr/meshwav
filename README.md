@@ -99,7 +99,7 @@ Full list at the top of `crates/desktop-agent/src/main.rs`.
 
 ## Android receiver
 
-Kotlin app in `apps/android` (Gradle). Build with `./gradlew assembleDebug` inside that directory. Enter the agent's tailnet IP and the pairing code.
+Kotlin app in `apps/android` (Gradle). Build with `./gradlew assembleDebug` inside that directory. Pair by typing only the 6-digit code: on the computer open a pairing window (`meshwav pair`, or Send, Show pairing code in the window), then on the phone choose Receive, type the code and tap Pair. While the window is open the sender tells waiting phones on the tailnet where it is, so no address or key is typed. A `meshwav://pair` link still works under "Use a pairing link instead". The app stays connected to the paired sender (so it shows as online) until you tap Disconnect. Lossless PCM is a Quality setting on the receiving side: in the phone app, and in the Linux receive window (or `meshwav receive run --lossless`).
 
 ## Tests
 

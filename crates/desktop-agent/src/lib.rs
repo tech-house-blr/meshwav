@@ -17,6 +17,7 @@
 mod log;
 mod config;
 mod fleet;
+mod invite;
 mod redirect;
 mod store;
 
@@ -514,6 +515,7 @@ pub fn run(args: Vec<String>) {
         move || {
             let code = new_code();
             server.lock().unwrap().open_pairing(&code, now_ms());
+            invite::announce(addr.ip(), public, addr.port(), Duration::from_millis(audio_protocol::server::PAIR_TTL_MS));
             pairing_text(addr, &public, &code)
         }
     };

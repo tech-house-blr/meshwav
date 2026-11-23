@@ -123,6 +123,8 @@ struct App {
     slider: u32,
     outputs: Vec<Output>,
     device: String,
+    /// Ask the sender for lossless PCM instead of Opus (applies live, remembered).
+    lossless: bool,
     link: String,
     pairing: Option<Pairing>,
     message: Option<(String, Color32)>,
@@ -140,6 +142,10 @@ fn device_path(dir: &std::path::Path) -> PathBuf {
 
 fn mode_path(dir: &std::path::Path) -> PathBuf {
     dir.join("mode")
+}
+
+fn quality_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("quality")
 }
 
 fn volume_path(dir: &std::path::Path) -> PathBuf {
@@ -162,6 +168,7 @@ impl App {
         let paired = store::load_paired(&dir).ok().flatten();
         let device = std::fs::read_to_string(device_path(&dir)).unwrap_or_default().trim().to_string();
         let start_volume = std::fs::read_to_string(volume_path(&dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100u32).min(100);
+        let lossless = std::fs::read_to_string(quality_path(&dir)).map(|s| s.trim() == "lossless").unwrap_or(false);
         let mut app = App {
             dir,
             name: store::host_name(),
@@ -171,6 +178,7 @@ impl App {
             slider: start_volume,
             outputs: list_outputs(),
             device,
+            lossless,
             link: String::new(),
             pairing: None,
             message: None,
@@ -208,6 +216,7 @@ impl App {
         };
         let settings = Settings { agent: p.agent, agent_key: p.key, identity, name: self.name.clone() };
         let (stop, status) = (Arc::new(AtomicBool::new(false)), Arc::new(Status::default()));
+        status.set_lossless(self.lossless);
         let (st, sa) = (stop.clone(), status.clone());
         let sink = Gain::new(sink, self.volume.clone());
         let handle = std::thread::spawn(move || run(&settings, Box::new(sink), &st, &sa));
@@ -520,6 +529,24 @@ impl App {
             if ui.small_button("Refresh list").clicked() {
                 self.outputs = list_outputs();
             }
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new("Quality").color(MUTED));
+        ui.horizontal(|ui| {
+            let before = self.lossless;
+            ui.selectable_value(&mut self.lossless, false, "Opus");
+            ui.selectable_value(&mut self.lossless, true, "Lossless PCM");
+            if self.lossless != before {
+                let _ = std::fs::write(quality_path(&self.dir), if self.lossless { "lossless" } else { "opus" });
+                if let Some(w) = &self.worker {
+                    w.status.set_lossless(self.lossless);
+                }
+            }
+        });
+        if self.lossless && !snap.note.is_empty() {
+            ui.label(RichText::new(&snap.note).color(WARN));
+        } else if self.lossless {
+            ui.label(RichText::new("Sends the audio uncompressed, about 1.7 Mbit/s, in 5 ms packets.").color(MUTED));
         }
         ui.add_space(8.0);
         ui.label(RichText::new("Volume").color(MUTED));

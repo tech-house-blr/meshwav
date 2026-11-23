@@ -21,6 +21,9 @@ pub const KIND_XX: u8 = 0x10;
 pub const KIND_XXPSK3: u8 = 0x11;
 /// Pairing discovery probe: a sender with an open pairing window answers with its static public key.
 pub const KIND_HELLO: u8 = 0x12;
+/// A sender with an open pairing window tells a waiting phone where it is: body = public key (32) + port (u16 BE).
+/// Unauthenticated by design, like HELLO: the pairing code and the pinned key protect the pairing itself.
+pub const KIND_INVITE: u8 = 0x13;
 const FRAME_HEADER: usize = 9;
 
 #[derive(Clone)]
@@ -249,6 +252,24 @@ pub fn is_handshake(d: &[u8]) -> bool {
     d.len() >= FRAME_HEADER && d[0..2] == *b"MW" && d[2] == crate::packet::VERSION && (KIND_XX..=KIND_HELLO).contains(&d[3])
 }
 
+/// The datagram a sender with an open pairing window sends to a waiting phone.
+pub fn invite_frame(sid: u32, key: &PublicKey, port: u16) -> Vec<u8> {
+    let mut body = key.to_vec();
+    body.extend_from_slice(&port.to_be_bytes());
+    frame(KIND_INVITE, sid, 1, &body)
+}
+
+/// The sender's key and port from an invite datagram, or `None` for anything else.
+pub fn parse_invite(d: &[u8]) -> Option<(PublicKey, u16)> {
+    if d.len() != FRAME_HEADER + 34 || d[0..2] != *b"MW" || d[2] != crate::packet::VERSION || d[3] != KIND_INVITE || d[8] != 1 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&d[FRAME_HEADER..FRAME_HEADER + 32]);
+    let port = u16::from_be_bytes([d[FRAME_HEADER + 32], d[FRAME_HEADER + 33]]);
+    (port != 0).then_some((key, port))
+}
+
 pub fn parse_frame(d: &[u8]) -> Option<Frame<'_>> {
     if !is_handshake(d) || d.len() > 512 {
         return None;
@@ -259,4 +280,25 @@ pub fn parse_frame(d: &[u8]) -> Option<Frame<'_>> {
         step: d[8],
         body: &d[FRAME_HEADER..],
     })
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::*;
+
+    #[test]
+    fn invite_round_trips_and_rejects_junk() {
+        let f = invite_frame(7, &[9; 32], 47900);
+        // The same bytes are checked by the Android test (InviteTest.kt), so both sides agree on the layout.
+        let hex: String = f.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "4d57011300000007010909090909090909090909090909090909090909090909090909090909090909bb1c");
+        assert_eq!(parse_invite(&f), Some(([9; 32], 47900)));
+        assert_eq!(parse_invite(&f[..f.len() - 1]), None);
+        assert_eq!(parse_invite(&invite_frame(1, &[1; 32], 0)), None);
+        let mut h = f.clone();
+        h[3] = KIND_HELLO;
+        assert_eq!(parse_invite(&h), None);
+        // An invite is not a handshake frame, so a sender's handshake server never sees one.
+        assert!(!is_handshake(&f));
+    }
 }
