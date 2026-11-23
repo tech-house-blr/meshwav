@@ -1,0 +1,19 @@
+[package]
+name = "android-spike"
+description = "Throwaway spike: the agent's send side as a library, for Android via JNI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+audio-protocol = { path = "../audio-protocol" }
+audio-codec = { path = "../audio-codec" }
+audio-transport = { path = "../audio-transport" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
