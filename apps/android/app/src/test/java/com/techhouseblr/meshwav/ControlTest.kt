@@ -22,6 +22,15 @@ class ControlTest {
         assertEquals(ControlWire.Msg.SetConfig(7, 128, 20, 0), ControlWire.decode(hex("00090b0007000000801400")))
     }
 
+    // Same literals as the Rust test runtime_config_messages_have_fixed_wire_bytes.
+    @Test fun activeStateMatchesRust() {
+        assertEquals(ControlWire.Msg.Active(true), ControlWire.decode(hex("00020e01")))
+        assertEquals(ControlWire.Msg.Active(false), ControlWire.decode(hex("00020e00")))
+        assertNull(ControlWire.decode(hex("00020e02")))      // not a bool
+        assertNull(ControlWire.decode(hex("00030e0100")))    // wrong length
+        assertNull(ControlWire.decode(hex("00010e")))
+    }
+
     @Test fun rejectsMalformed() {
         assertNull(ControlWire.decode(ByteArray(0)))
         assertNull(ControlWire.decode(hex("0008")))
@@ -30,7 +39,7 @@ class ControlTest {
         assertNull(ControlWire.decode(hex("00040c000801")))              // wrong length for the type
         assertNull(ControlWire.decode(hex("00010c")))
         assertNull(ControlWire.decode(hex("0000")))
-        assertNull(ControlWire.decode(hex("00020e0000")))                // unknown type
+        assertNull(ControlWire.decode(hex("00020f00")))                  // unknown type
         assertNull(ControlWire.decode(hex("ffff0c")))
     }
 

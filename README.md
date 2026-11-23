@@ -23,6 +23,17 @@ cargo build --release -p meshwav-agent
 ./target/release/meshwav-agent --pair
 ```
 
+Several phones can be paired and connected at once; one gets the audio. With the agent running, from another terminal:
+
+```
+meshwav-agent devices                # who is paired, online, active or standby
+meshwav-agent use "Phone name"       # send the audio there (name, name prefix or key prefix)
+meshwav-agent use auto               # first connected device keeps it again
+meshwav-agent rename "Phone name" "New name"
+```
+
+The chosen device is remembered across restarts. A device that is not chosen never takes the stream from the active one.
+
 Common flags: `--bind IP:PORT`, `--kbps 160`, `--frame-ms 10`, `--source SINK.monitor`, `--no-redirect`, `--identity PATH`, `--authorized PATH`.
 Full list at the top of `crates/desktop-agent/src/main.rs`.
 

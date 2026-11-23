@@ -35,11 +35,12 @@ object Stats {
     @Volatile var lossless = false
     @Volatile var qualityNote = ""   // e.g. why lossless was dropped
     @Volatile var output = ""        // what Android actually granted for playback
+    @Volatile var standby = false    // the agent sends audio to another of your receivers
 
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
-        kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""
+        kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
     }
 }
 
@@ -281,7 +282,7 @@ class StreamReceiver(
                 }
                 if (!awaitingAck) {
                     if (now - lastAlive > AGENT_QUIET_REBIND_MS) { rebind("agent not responding"); lastAlive = now }
-                    else if (now - lastAudio > 3000) Stats.state = "No audio from $host (is anything playing?)"
+                    else if (now - lastAudio > 3000 && !Stats.standby) Stats.state = "No audio from $host (is anything playing?)"
                 }
                 continue
             } catch (_: Exception) {
@@ -302,7 +303,17 @@ class StreamReceiver(
                 onPaired?.invoke()
             }
             if (p.type == Wire.TYPE_CONTROL) {
-                ControlWire.decode(p.payload)?.let { m -> synchronized(cfg) { cfg.onMessage(m) } }
+                ControlWire.decode(p.payload)?.let { m ->
+                    if (m is ControlWire.Msg.Active) {
+                        if (!m.active) {
+                            Stats.standby = true
+                            Stats.state = "Standby: the agent is sending audio to another device"
+                        } else if (Stats.standby) {
+                            Stats.standby = false
+                            Stats.state = "Connected"
+                        }
+                    } else synchronized(cfg) { cfg.onMessage(m) }
+                }
                 continue
             }
             if (p.type != Wire.TYPE_AUDIO || p.fragCnt != 1) continue

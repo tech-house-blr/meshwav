@@ -13,6 +13,7 @@
 //! devices = ~/.config/meshwav/authorized_peers (both 0600, created on first use). The listener
 //! refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
 //! PipeWire-pulse) on the default sink's monitor.
+mod fleet;
 mod redirect;
 mod store;
 
@@ -25,6 +26,8 @@ use audio_protocol::server::{Outcome, Server};
 use audio_transport::is_tailnet_or_loopback;
 use std::io::{BufRead, Read};
 use std::net::{SocketAddr, UdpSocket};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,10 +59,14 @@ const KEEPALIVE: Duration = Duration::from_secs(1);
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PORT: u16 = 47900;
 
-/// The one active receiver session. A new successful handshake replaces it.
+/// One connected receiver. A new successful handshake from the same device replaces its session.
 struct Session {
     addr: SocketAddr,
     peer: [u8; 32],
+    name: String,
+    connected_at: Instant,
+    /// Last active/standby state announced to the receiver (`None` = not told yet).
+    told: Option<bool>,
     last_seen: Instant,
     sealer: Sealer,
     /// Agent-to-receiver packets on the control stream: keepalives and control replies.
@@ -120,7 +127,72 @@ impl ControlState {
     }
 }
 
+/// Every connected receiver and which one is active (gets audio). The others stay on keepalives.
+struct Fleet {
+    sessions: Vec<Session>,
+    preferred: Option<fleet::Key>,
+    active: Option<fleet::Key>,
+    preferred_path: std::path::PathBuf,
+}
+
+impl Fleet {
+    fn online_keys(&self) -> Vec<fleet::Key> {
+        let mut v: Vec<&Session> = self.sessions.iter().filter(|s| s.online()).collect();
+        v.sort_by_key(|s| s.connected_at);
+        v.iter().map(|s| s.peer).collect()
+    }
+
+    fn any_online(&self) -> bool {
+        self.sessions.iter().any(Session::online)
+    }
+
+    fn is_online(&self, key: &fleet::Key) -> bool {
+        self.sessions.iter().any(|s| &s.peer == key && s.online())
+    }
+
+    fn active_session(&mut self) -> Option<&mut Session> {
+        let a = self.active?;
+        self.sessions.iter_mut().find(|s| s.peer == a && s.online())
+    }
+
+    /// Re-run the selection and tell receivers whose state changed. Cheap; called every frame.
+    fn update(&mut self, sock: &UdpSocket) {
+        self.sessions.retain(|s| s.last_seen.elapsed() < Duration::from_secs(60));
+        let new = fleet::choose(self.preferred, self.active, &self.online_keys());
+        if new != self.active {
+            let label = |k: Option<fleet::Key>| match k.and_then(|k| self.sessions.iter().find(|s| s.peer == k)) {
+                Some(s) => format!("'{}'", s.name),
+                None => "nobody".to_string(),
+            };
+            println!("active receiver: {} (was {})", label(new), label(self.active));
+            self.active = new;
+        }
+        let active = self.active;
+        for s in self.sessions.iter_mut().filter(|s| s.online()) {
+            let want = Some(s.peer) == active;
+            if s.told != Some(want) {
+                s.send_control(&Message::ActiveState { active: want }, sock);
+                s.told = Some(want);
+            }
+        }
+    }
+
+    /// Once a second: keepalives for everyone, and the active/standby state again (a lost packet only delays it).
+    fn keepalive(&mut self, sock: &UdpSocket) {
+        self.update(sock);
+        let active = self.active;
+        for s in self.sessions.iter_mut().filter(|s| s.online()) {
+            s.send_keepalive(sock);
+            s.send_control(&Message::ActiveState { active: Some(s.peer) == active }, sock);
+        }
+    }
+}
+
 impl Session {
+    fn online(&self) -> bool {
+        self.last_seen.elapsed() < PEER_TIMEOUT
+    }
+
     /// Sealed empty `Punch` on the control stream: proves liveness (and the handshake) to the receiver.
     fn send_control(&mut self, msg: &Message, sock: &UdpSocket) {
         let h = Header { ptype: PacketType::Control, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
@@ -234,6 +306,127 @@ fn active_sources() -> Vec<String> {
     found
 }
 
+/// Run one local control command (`devices`, `use`, `rename`) and return the reply text.
+/// Requests are tab-separated lines: `devices`, `use\t<device|auto>`, `rename\t<device>\t<new name>`.
+fn run_command(
+    line: &str,
+    server: &Mutex<Server>,
+    fleet: &Mutex<Fleet>,
+    sock: &UdpSocket,
+    authorized_path: &std::path::Path,
+) -> String {
+    let parts: Vec<&str> = line.trim_end_matches(['\r', '\n']).split('\t').collect();
+    let list: Vec<(fleet::Key, String)> = server.lock().unwrap().authorized().iter().map(|a| (a.public, a.name.clone())).collect();
+    let find = |q: &str| match fleet::resolve(q, &list) {
+        fleet::Resolved::One(i) => Ok(i),
+        fleet::Resolved::None => Err(format!("error: no paired device matches '{q}' (try `devices`)")),
+        fleet::Resolved::Ambiguous => Err(format!("error: '{q}' matches more than one device; use more of the name or the key")),
+    };
+    match parts.as_slice() {
+        ["devices"] => {
+            let mut f = fleet.lock().unwrap();
+            f.update(sock);
+            if list.is_empty() {
+                return "no paired devices yet".to_string();
+            }
+            let mut out = String::new();
+            for (key, name) in &list {
+                let state = if f.active == Some(*key) {
+                    "active"
+                } else if f.is_online(key) {
+                    "standby"
+                } else {
+                    "offline"
+                };
+                let pref = if f.preferred == Some(*key) { "  (chosen)" } else { "" };
+                out.push_str(&format!("{:<20} {}  {state}{pref}\n", name, &hex(key)[..16]));
+            }
+            out.trim_end().to_string()
+        }
+        ["use", q] if q.trim().eq_ignore_ascii_case("auto") => {
+            let mut f = fleet.lock().unwrap();
+            f.preferred = None;
+            if let Err(e) = store::save_preferred(&f.preferred_path, None) {
+                return format!("error: could not save the choice: {e}");
+            }
+            f.update(sock);
+            "automatic selection: the device that was connected first keeps the audio".to_string()
+        }
+        ["use", q] => {
+            let (key, name) = match find(q) {
+                Ok(i) => list[i].clone(),
+                Err(e) => return e,
+            };
+            let mut f = fleet.lock().unwrap();
+            if let Err(e) = store::save_preferred(&f.preferred_path, Some(&key)) {
+                return format!("error: could not save the choice: {e}");
+            }
+            f.preferred = Some(key);
+            f.update(sock);
+            if f.is_online(&key) {
+                format!("audio now goes to '{name}'")
+            } else {
+                format!("'{name}' is offline; it gets the audio as soon as it connects")
+            }
+        }
+        ["rename", q, new] => {
+            let new: String = new.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
+            if new.is_empty() {
+                return "error: the new name is empty".to_string();
+            }
+            let (key, _) = match find(q) {
+                Ok(i) => list[i].clone(),
+                Err(e) => return e,
+            };
+            let snapshot = {
+                let mut srv = server.lock().unwrap();
+                srv.rename(&key, &new);
+                srv.authorized().to_vec()
+            };
+            if let Err(e) = store::save_authorized(authorized_path, &snapshot) {
+                return format!("error: could not save paired devices: {e}");
+            }
+            if let Some(s) = fleet.lock().unwrap().sessions.iter_mut().find(|s| s.peer == key) {
+                s.name = new.clone();
+            }
+            format!("renamed to '{new}'")
+        }
+        _ => "error: commands are `devices`, `use <device|auto>`, `rename <device> <new name>`".to_string(),
+    }
+}
+
+/// `meshwav-agent devices | use <device|auto> | rename <device> <new name>`: talk to the running agent.
+fn client(args: &[String], sock_path: &std::path::Path) -> ! {
+    let mut words: Vec<&str> = Vec::new();
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if a == "--control" {
+            it.next();
+        } else if !a.starts_with("--") {
+            words.push(a);
+        }
+    }
+    let line = match words.as_slice() {
+        ["devices"] => "devices".to_string(),
+        ["use", rest @ ..] if !rest.is_empty() => format!("use\t{}", rest.join(" ")),
+        ["rename", dev, rest @ ..] if !rest.is_empty() => format!("rename\t{dev}\t{}", rest.join(" ")),
+        _ => {
+            eprintln!("usage: meshwav-agent devices | use <device|auto> | rename <device> <new name>");
+            std::process::exit(2);
+        }
+    };
+    let mut c = UnixStream::connect(sock_path).unwrap_or_else(|e| {
+        eprintln!("cannot reach the running agent at {} ({e}); is it started?", sock_path.display());
+        std::process::exit(1);
+    });
+    let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = writeln!(c, "{line}");
+    let mut reply = String::new();
+    let _ = std::io::BufReader::new(c).read_to_string(&mut reply);
+    println!("{}", reply.trim_end());
+    std::process::exit(if reply.starts_with("error") { 1 } else { 0 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let kbps: u32 = arg(&args, "--kbps")
@@ -250,6 +443,10 @@ fn main() {
         }
     });
     let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
+    let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
+    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename")) {
+        client(&args, &control_path);
+    }
     let identity_path = arg(&args, "--identity").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("identity"));
     let authorized_path = arg(&args, "--authorized").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("authorized_peers"));
     if args.iter().any(|a| a == "--key-file") {
@@ -308,7 +505,13 @@ fn main() {
     let mut frame_samples = enc.frame_samples();
     let (mut cur_kbps, mut cur_frame_ms, mut cur_codec) = (kbps, frame_ms, CODEC_OPUS);
 
-    let session: Arc<Mutex<Option<Session>>> = Arc::new(Mutex::new(None));
+    let preferred_path = cfg_dir.join("active_peer");
+    let session: Arc<Mutex<Fleet>> = Arc::new(Mutex::new(Fleet {
+        sessions: Vec::new(),
+        preferred: store::load_preferred(&preferred_path),
+        active: None,
+        preferred_path,
+    }));
     {
         let (sock, session, server) = (sock.try_clone().unwrap(), session.clone(), server.clone());
         let authorized_path = authorized_path.clone();
@@ -336,7 +539,8 @@ fn main() {
                             }
                             let mut cur = session.lock().unwrap();
                             // A device re-keying itself (network change, idle reconnect) is not news.
-                            let rekey = cur.as_ref().is_some_and(|s| s.peer == peer && s.last_seen.elapsed() < PEER_TIMEOUT);
+                            let old = cur.sessions.iter().position(|s| s.peer == peer);
+                            let rekey = old.is_some_and(|i| cur.sessions[i].online());
                             if newly_paired || !rekey {
                                 println!(
                                     "{} '{name}' (key {}) connected from {from}",
@@ -344,9 +548,16 @@ fn main() {
                                     &hex(&peer)[..16]
                                 );
                             }
+                            let connected_at = match old {
+                                Some(i) if rekey => cur.sessions[i].connected_at,
+                                _ => Instant::now(),
+                            };
                             let mut s = Session {
                                 addr: from,
                                 peer,
+                                name: name.clone(),
+                                connected_at,
+                                told: None,
                                 last_seen: Instant::now(),
                                 sealer: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, STREAM_ID, 0),
                                 keepalive: Sealer::new(&keys.to_receiver, Direction::AgentToReceiver, CONTROL_STREAM, 0),
@@ -356,12 +567,20 @@ fn main() {
                                 closed: false,
                             };
                             s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
-                            *cur = Some(s);
+                            cur.sessions.retain(|x| x.peer != peer);
+                            cur.sessions.push(s);
+                            cur.update(&sock);
                         }
                         Outcome::Rejected(why) => eprintln!("handshake from {from} rejected: {why}"),
                         Outcome::None => {}
                     }
-                } else if let Some(s) = session.lock().unwrap().as_mut().filter(|s| s.addr == from) {
+                } else {
+                    let mut f = session.lock().unwrap();
+                    let active = f.active;
+                    let Some(i) = f.sessions.iter().position(|s| s.addr == from) else { continue };
+                    let is_active = Some(f.sessions[i].peer) == active;
+                    let others_online = f.sessions.iter().enumerate().any(|(j, s)| j != i && s.online());
+                    let s = &mut f.sessions[i];
                     if let Ok((h, _)) = s.opener.open(d) {
                         if h.ptype == PacketType::Punch && !s.closed {
                             s.last_seen = Instant::now();
@@ -378,9 +597,13 @@ fn main() {
                                     if let Some(t) = Instant::now().checked_sub(PEER_TIMEOUT * 2) {
                                         s.last_seen = t;
                                     }
-                                    BYE.store(true, Ordering::SeqCst);
-                                    println!("receiver said goodbye");
-                                } else if s.closed {
+                                    // Undo the redirect right away, unless another receiver is still listening.
+                                    if !others_online {
+                                        BYE.store(true, Ordering::SeqCst);
+                                    }
+                                    println!("receiver '{}' said goodbye", s.name);
+                                } else if s.closed || !is_active {
+                                    // A standby receiver must not retune the shared encoder; it can ask again once active.
                                 } else if let Some(reply) = s.ctl.on_message(msg) {
                                     s.send_control(&reply, &sock);
                                 }
@@ -396,10 +619,33 @@ fn main() {
         let (sock, session) = (sock.try_clone().unwrap(), session.clone());
         std::thread::spawn(move || loop {
             std::thread::sleep(KEEPALIVE);
-            if let Some(s) = session.lock().unwrap().as_mut().filter(|s| s.last_seen.elapsed() < PEER_TIMEOUT) {
-                s.send_keepalive(&sock);
-            }
+            session.lock().unwrap().keepalive(&sock);
         });
+    }
+
+    // Local control socket (owner-only): `meshwav-agent devices | use | rename` talk to it.
+    {
+        let _ = std::fs::remove_file(&control_path); // a stale socket from a crashed run; the UDP bind above already proved we are the only agent
+        let old_umask = unsafe { libc::umask(0o177) };
+        let listener = UnixListener::bind(&control_path);
+        unsafe { libc::umask(old_umask) };
+        match listener {
+            Ok(listener) => {
+                let (sock, session, server, authorized_path) = (sock.try_clone().unwrap(), session.clone(), server.clone(), authorized_path.clone());
+                std::thread::spawn(move || {
+                    for conn in listener.incoming().flatten() {
+                        let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut line = String::new();
+                        let mut reader = std::io::BufReader::new(&conn);
+                        if reader.read_line(&mut line).is_ok() {
+                            let reply = run_command(&line, &server, &session, &sock, &authorized_path);
+                            let _ = writeln!(&conn, "{reply}");
+                        }
+                    }
+                });
+            }
+            Err(e) => eprintln!("control socket unavailable at {}: {e}", control_path.display()),
+        }
     }
 
     let want_redirect = !args.iter().any(|a| a == "--no-redirect") && arg(&args, "--source").is_none();
@@ -431,7 +677,7 @@ fn main() {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
-            let connected = session.lock().unwrap().as_ref().is_some_and(|s| s.last_seen.elapsed() < PEER_TIMEOUT);
+            let connected = session.lock().unwrap().any_online();
             if BYE.swap(false, Ordering::SeqCst) {
                 redirect.lock().unwrap().release();
             }
@@ -506,8 +752,9 @@ fn main() {
             }
             ts = ts.wrapping_add(frame_samples as u32);
             let mut guard = session.lock().unwrap();
+            guard.update(&sock);
             let mut exhausted = false;
-            match guard.as_mut().filter(|s| s.last_seen.elapsed() < PEER_TIMEOUT) {
+            match guard.active_session() {
                 None => {
                     if connected {
                         println!("receiver timed out; idle");
@@ -580,7 +827,9 @@ fn main() {
             if exhausted {
                 // The receiver reconnects on silence and gets fresh keys from a new handshake.
                 eprintln!("sequence space exhausted; dropping the session so the receiver rekeys");
-                *guard = None;
+                if let Some(a) = guard.active {
+                    guard.sessions.retain(|s| s.peer != a);
+                }
                 connected = false;
             }
             drop(guard);

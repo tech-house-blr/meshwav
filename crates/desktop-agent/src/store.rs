@@ -107,6 +107,21 @@ pub fn save_authorized(path: &Path, list: &[Authorized]) -> std::io::Result<()> 
     write_private(path, &s, true)
 }
 
+/// The device the user chose with `use`; absent or unreadable means automatic selection.
+pub fn load_preferred(path: &Path) -> Option<[u8; 32]> {
+    unhex32(std::fs::read_to_string(path).ok()?.trim())
+}
+
+pub fn save_preferred(path: &Path, key: Option<&[u8; 32]>) -> std::io::Result<()> {
+    match key {
+        Some(k) => write_private(path, &format!("{}\n", hex(k)), true),
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() != ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +185,18 @@ mod tests {
         assert_eq!(load_authorized(&p).unwrap().len(), 2, "duplicates dropped");
         std::fs::write(&p, "zz name\n").unwrap();
         assert!(load_authorized(&p).is_err());
+    }
+
+    #[test]
+    fn preferred_roundtrip_and_clear() {
+        let p = tmp("preferred").join("active_peer");
+        assert_eq!(load_preferred(&p), None);
+        save_preferred(&p, Some(&[7; 32])).unwrap();
+        assert_eq!(load_preferred(&p), Some([7; 32]));
+        save_preferred(&p, Some(&[8; 32])).unwrap();
+        assert_eq!(load_preferred(&p), Some([8; 32]));
+        save_preferred(&p, None).unwrap();
+        assert_eq!(load_preferred(&p), None);
+        save_preferred(&p, None).unwrap(); // clearing twice is fine
     }
 }

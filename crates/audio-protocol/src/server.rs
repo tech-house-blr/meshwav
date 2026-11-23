@@ -79,6 +79,17 @@ impl Server {
         &self.authorized
     }
 
+    /// Change the stored name of a paired device. Returns false when the key is not paired.
+    pub fn rename(&mut self, public: &PublicKey, name: &str) -> bool {
+        match self.authorized.iter_mut().find(|a| &a.public == public) {
+            Some(a) => {
+                a.name = name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Open (or restart) the pairing window with a 6-digit code. Returns false for a bad code.
     pub fn open_pairing(&mut self, code: &str, now_ms: u64) -> bool {
         if !handshake::valid_code(code) {

@@ -42,6 +42,9 @@ pub enum Message {
     ConfigApplied { req: u16, kbps: u32, frame_ms: u8, codec: u8 },
     /// Agent refuses; see `REJECT_*`.
     ConfigRejected { req: u16, reason: u8 },
+    /// Agent tells a receiver whether it is the one getting audio (`true`) or on standby (`false`).
+    /// Repeated about once a second, so a lost packet only delays the news.
+    ActiveState { active: bool },
 }
 
 pub const REJECT_BITRATE: u8 = 1;
@@ -134,6 +137,7 @@ impl Message {
             Message::SetConfig { req, kbps, frame_ms, codec } => { w.u8(11); w.u16(*req); w.u32(*kbps); w.u8(*frame_ms); w.u8(*codec); }
             Message::ConfigApplied { req, kbps, frame_ms, codec } => { w.u8(12); w.u16(*req); w.u32(*kbps); w.u8(*frame_ms); w.u8(*codec); }
             Message::ConfigRejected { req, reason } => { w.u8(13); w.u16(*req); w.u8(*reason); }
+            Message::ActiveState { active } => { w.u8(14); w.u8(*active as u8); }
         }
         let len = (w.0.len() - 2) as u16;
         w.0[0..2].copy_from_slice(&len.to_be_bytes());
@@ -160,6 +164,7 @@ impl Message {
             11 => Message::SetConfig { req: r.u16()?, kbps: r.u32()?, frame_ms: r.u8()?, codec: r.u8()? },
             12 => Message::ConfigApplied { req: r.u16()?, kbps: r.u32()?, frame_ms: r.u8()?, codec: r.u8()? },
             13 => Message::ConfigRejected { req: r.u16()?, reason: r.u8()? },
+            14 => Message::ActiveState { active: match r.u8()? { 0 => false, 1 => true, _ => return Err(ProtocolError::BadControl("bad bool")) } },
             _ => return Err(ProtocolError::BadControl("unknown type")),
         };
         if !r.0.is_empty() { return Err(ProtocolError::BadControl("trailing bytes")) }

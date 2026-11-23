@@ -246,7 +246,15 @@ fn pin_mismatch_aborts_and_second_pairing_via_stdin() {
     assert_ne!(code, code2);
     let b = Keypair::generate();
     let db = dial(port, &b, pk, Some(pairing_psk(&pk, &code2)), 3).unwrap();
-    assert!(db.hear_audio(5));
+    // the first device keeps the stream; the newcomer is on standby
+    let (mut la, mut lb) = (Link::new(&da), Link::new(&db));
+    let (mut a_audio, mut b_audio) = (0, 0);
+    for _ in 0..3 {
+        a_audio += seqs(&la.pump(400)).len();
+        b_audio += seqs(&lb.pump(400)).len();
+    }
+    assert!(a_audio > 50, "first device keeps streaming: {a_audio}");
+    assert_eq!(b_audio, 0, "a second device must not steal the stream");
     let auth = authorized_file(&dir);
     assert!(auth.contains(&hex(&a.public)) && auth.contains(&hex(&b.public)), "{auth}");
     assert_eq!(agent.port, port);
@@ -419,7 +427,7 @@ fn goodbye_stops_the_stream_at_once() {
     let mut l = Link::new(&d);
     assert!(!frame_sizes(&l.pump(500)).is_empty());
     l.send(&Message::Bye { reason: 0 });
-    agent.wait_line("receiver said goodbye");
+    agent.wait_line("said goodbye");
     l.pump(100); // drain what was already in flight
     assert!(frame_sizes(&l.pump(700)).is_empty(), "no audio after goodbye, even though punches keep arriving");
 }
@@ -473,4 +481,118 @@ fn sigterm_stops_the_agent_even_without_redirect() {
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("agent ignored SIGTERM");
+}
+
+/// Run `meshwav-agent <args>` as the CLI client against the agent that uses `dir` as HOME.
+fn cli(dir: &Path, args: &[&str]) -> (bool, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_meshwav-agent")).env("HOME", dir).args(args).output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+    (o.status.success(), text)
+}
+
+fn states(evs: &[Ev]) -> Vec<bool> {
+    evs.iter().filter_map(|e| if let Ev::Ctl(Message::ActiveState { active }) = e { Some(*active) } else { None }).collect()
+}
+
+#[test]
+fn choosing_the_receiver_moves_the_stream_and_is_remembered() {
+    let dir = workdir("select");
+    let port = free_port();
+    let mut agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    assert!(!seqs(&la.pump(500)).is_empty());
+    writeln!(agent.stdin, "pair").unwrap();
+    agent.stdin.flush().unwrap();
+    let (_, code2) = agent.pairing();
+    let db = dial(port, &kb, pk, Some(pairing_psk(&pk, &code2)), 2).unwrap();
+    let mut lb = Link::new(&db);
+
+    // first device active, second on standby, and each is told so
+    let (ea, eb) = (la.pump(600), lb.pump(1500));
+    let ea2 = la.pump(900);
+    assert!(!seqs(&ea).is_empty() && seqs(&eb).is_empty(), "standby gets no audio");
+    assert_eq!(states(&eb).last(), Some(&false), "standby is told so");
+    assert_eq!(states(&ea2).last(), Some(&true), "active is told so");
+    // keepalives keep the standby session alive
+    assert!(seqs(&lb.pump(300)).is_empty());
+
+    let (ok, text) = cli(&dir, &["devices"]);
+    assert!(ok, "{text}");
+    assert!(text.contains("e2e phone") && text.contains("active") && text.contains("standby"), "{text}");
+
+    // unknown and ambiguous names are refused and change nothing
+    let (ok, text) = cli(&dir, &["use", "nope"]);
+    assert!(!ok && text.contains("no paired device"), "{text}");
+    let key_b = &hex(&kb.public)[..8];
+    let (ok, text) = cli(&dir, &["rename", &hex(&ka.public)[..8], "Desk PC"]);
+    assert!(ok, "{text}");
+    assert!(authorized_file(&dir).contains("Desk PC"));
+    assert!(cli(&dir, &["rename", key_b, "Phone B"]).0);
+
+    // move the stream to the second device
+    let (ok, text) = cli(&dir, &["use", "phone b"]);
+    assert!(ok && text.contains("Phone B"), "{text}");
+    agent.wait_line("active receiver: 'Phone B'");
+    la.pump(200);
+    lb.pump(200); // drain what was in flight
+    let (ea, eb) = (la.pump(800), lb.pump(800));
+    assert!(seqs(&ea).is_empty(), "old device stops getting audio");
+    assert!(seqs(&eb).len() > 30, "chosen device streams: {}", seqs(&eb).len());
+    assert_eq!(states(&ea).last(), Some(&false));
+    assert!(std::fs::read_to_string(dir.join(".config/meshwav/active_peer")).unwrap().contains(&hex(&kb.public)));
+
+    // the chosen device leaves: the stream falls back to the one still connected
+    lb.send(&Message::Bye { reason: 0 });
+    la.pump(100);
+    let ea = la.pump(1200);
+    assert!(seqs(&ea).len() > 30, "fallback device streams again: {}", seqs(&ea).len());
+
+    // back to automatic
+    let (ok, text) = cli(&dir, &["use", "auto"]);
+    assert!(ok, "{text}");
+    assert!(!dir.join(".config/meshwav/active_peer").exists());
+}
+
+#[test]
+fn chosen_receiver_survives_an_agent_restart() {
+    let dir = workdir("remember");
+    let port = free_port();
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let mut agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    la.pump(300); // msg3 is processed before the code is replaced
+    writeln!(agent.stdin, "pair").unwrap();
+    agent.stdin.flush().unwrap();
+    let (_, code2) = agent.pairing();
+    let db = dial(port, &kb, pk, Some(pairing_psk(&pk, &code2)), 2).unwrap();
+    let mut lb = Link::new(&db);
+    la.pump(300);
+    lb.pump(300);
+    let (ok, text) = cli(&dir, &["use", &hex(&kb.public)[..8]]);
+    assert!(ok, "{text}");
+    drop(la);
+    drop(lb);
+    drop(da);
+    drop(db);
+    drop(agent);
+
+    // restart: A reconnects first, B second, yet B (the chosen one) gets the audio
+    let agent2 = start(&dir, false, port);
+    agent2.wait_line("paired devices: 2");
+    let da = dial(port, &ka, pk, None, 3).unwrap();
+    let mut la = Link::new(&da);
+    la.pump(300);
+    let db = dial(port, &kb, pk, None, 4).unwrap();
+    let mut lb = Link::new(&db);
+    la.pump(400);
+    lb.pump(400);
+    let (ea, eb) = (la.pump(800), lb.pump(800));
+    assert!(seqs(&ea).is_empty(), "A is standby after the restart");
+    assert!(seqs(&eb).len() > 30, "chosen B streams: {}", seqs(&eb).len());
+    drop(agent2);
 }
