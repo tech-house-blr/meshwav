@@ -53,3 +53,19 @@ Findings:
 - The agent built from this commit started on liberation and an already-paired phone (SM-S938B) reconnected with its pinned key and redirect took over audio, observed in the agent log.
 - Not measured: end-to-end PC-to-phone latency, the phone's pairing UI flow from a fresh install, and behaviour on Windows.
 
+
+## M4: end-to-end latency, click loopback (2026-11-23)
+
+Method: `scripts/latency/click_test.sh` plays 50 noise-burst clicks (5 ms, every 1.2 s) into a PulseAudio null sink on `liberation`. The agent captured that sink (`--no-redirect --source mwtest.monitor`) and streamed to the phone (`galaxy`, SM-S938B) over Tailscale. The phone played through its own speaker, next to liberation's Maono USB microphone. One ffmpeg process recorded the sink's monitor (reference) and the microphone; `scripts/latency/analyze.py` takes mic onset minus reference onset per click.
+
+| Profile | Clicks | p50 | p95 | min | max | sd |
+|---|---|---|---|---|---|---|
+| Lossless PCM, 5 ms packets (~1.5 Mbit/s) | 50/50 | 91.5 ms | 92.1 ms | 90.9 ms | 92.2 ms | 0.4 ms |
+| Opus 10 ms, 160 kbps | 50/50 | 114.9 ms | 115.5 ms | 114.1 ms | 115.6 ms | 0.4 ms |
+
+Target in docs/architecture.md (Opus 10 ms, direct path): p50 <= 60 ms, p95 <= 80 ms. **Not met**: Opus is about 55 ms over, and PCM was lower than Opus.
+
+Caveats:
+- The figure includes the microphone's USB capture latency, acoustic travel, and the phone speaker path, none of which were calibrated (no third device). The offset between the two ffmpeg inputs was not verified. Treat as an upper bound by an unknown few to a few tens of ms.
+- One session, one Wi-Fi condition, phone speaker output (not IEMs, not Bluetooth), 50 clicks per profile.
+- The very small spread (sd 0.4 ms) suggests a fixed buffering delay, not network jitter. Which stage holds the extra delay (receiver jitter buffer depth, MediaCodec Opus decode, AudioTrack buffer) is not yet known; why Opus is slower than PCM is also unexplained. Both are open hypotheses.
