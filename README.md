@@ -49,7 +49,9 @@ meshwav-receiver pair 'meshwav://pair?host=100.x.y.z&port=47900&pk=...&code=1234
 meshwav-receiver run
 ```
 
-Only the active device gets the audio. With several receivers paired, choose with `meshwav-agent use <name>`; the others show "Standby" and take over when chosen. Ctrl-C stops the receiver and hands the agent's audio back. `--output FILE` writes the received audio as raw 48 kHz stereo s16le instead of playing it (for machines without a sound server). The receiver connects only to tailnet or loopback addresses. There is no window yet and the package is not built into releases yet; build it with `cargo build --release -p meshwav-receiver`.
+For a window instead of commands, run `meshwav-receiver-gui` (built with `cargo build --release -p meshwav-receiver-gui`): it has a pairing screen where you paste the agent's link, shows Playing, Standby or Connecting, buffer and loss numbers, and a volume slider. It connects by itself when already paired and says goodbye to the agent when closed.
+
+Only the active device gets the audio. With several receivers paired, choose with `meshwav-agent use <name>`; the others show "Standby" and take over when chosen. Ctrl-C stops the receiver and hands the agent's audio back. `--output FILE` writes the received audio as raw 48 kHz stereo s16le instead of playing it (for machines without a sound server). The receiver connects only to tailnet or loopback addresses. The receiver is not built into releases yet; build it with `cargo build --release -p meshwav-receiver`.
 
 ## Build and run (Linux agent)
 

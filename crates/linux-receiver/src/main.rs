@@ -2,7 +2,6 @@
 use meshwav_receiver::sink::{Pacat, RawFile, Sink};
 use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Status};
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -35,10 +34,6 @@ fn die(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-fn host_name() -> String {
-    std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "linux".into())
-}
-
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut flag = |name: &str| -> Option<String> {
@@ -50,7 +45,7 @@ fn main() {
         Some(args.remove(i))
     };
     let dir = flag("--dir").map(PathBuf::from).unwrap_or_else(store::default_dir);
-    let name = flag("--name").unwrap_or_else(host_name);
+    let name = flag("--name").unwrap_or_else(store::host_name);
     let latency: u32 = match flag("--latency-ms") {
         None => 40,
         Some(v) => match v.parse() {
@@ -69,11 +64,7 @@ fn main() {
         "pair" => {
             let link = args.get(1).unwrap_or_else(|| die("pair needs the agent's pair: link"));
             let l = store::parse_pair_link(link).unwrap_or_else(|e| die(e));
-            let agent: SocketAddr = (l.host.as_str(), l.port)
-                .to_socket_addrs()
-                .ok()
-                .and_then(|mut a| a.next())
-                .unwrap_or_else(|| die(format!("cannot resolve {}", l.host)));
+            let agent = store::resolve(&l).unwrap_or_else(|e| die(e));
             let s = Settings { agent, agent_key: l.key, identity: identity(), name };
             eprintln!("pairing with {agent} ...");
             if let Err(e) = pair(&s, &l.code, &STOP) {
