@@ -1,0 +1,15 @@
+[package]
+name = "meshwav"
+description = "Meshwav: send this computer's audio to another device over the tailnet, or play audio sent to it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "meshwav"
+path = "src/main.rs"
+
+[dependencies]
+meshwav-agent = { path = "../desktop-agent" }
+meshwav-receiver = { path = "../linux-receiver" }

@@ -27,7 +27,7 @@ jobs:
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
-      - run: cargo build --release --locked -p meshwav-agent -p meshwav-receiver -p meshwav-receiver-gui
+      - run: cargo build --release --locked -p meshwav -p meshwav-agent -p meshwav-receiver -p meshwav-receiver-gui
       - name: Packages
         run: |
           sh packaging/build-deb.sh target/release/meshwav-agent dist
@@ -36,7 +36,7 @@ jobs:
           sh packaging/build-receiver-rpm.sh target/release/meshwav-receiver target/release/meshwav-receiver-gui dist
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           t=meshwav-agent-$v-linux-${{ matrix.arch }}
-          mkdir -p "$t" && cp target/release/meshwav-agent packaging/systemd/meshwav-agent.service packaging/config.toml.example LICENSE scripts/install-user-service.sh "$t/"
+          mkdir -p "$t" && cp target/release/meshwav-agent target/release/meshwav packaging/systemd/meshwav-agent.service packaging/config.toml.example LICENSE scripts/install-user-service.sh "$t/"
           tar czf "dist/$t.tar.gz" "$t"
       - name: Check the packages
         run: |

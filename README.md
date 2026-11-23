@@ -34,22 +34,26 @@ meshwav-agent pair
 
 The packages need `libopus` and `pulseaudio-utils` (`parec`, `pactl`; they work with PipeWire too) and install the binary, the user unit, a man page and an example config. Tailscale must run on both devices. They are not in the distributions' own repositories, so there is no `apt install meshwav-agent` without the file yet. Release binaries are built on Ubuntu 22.04, so they need glibc 2.35 or newer.
 
+## One program
+
+`meshwav` does both directions: `meshwav send` is the agent, `meshwav receive run|outputs|forget` is the receiver, and `meshwav pair`, `devices`, `use` and `rename` manage pairing and the active receiver. `meshwav-agent` and `meshwav-receiver` still work and run the same code. The receiver's files moved to `~/.config/meshwav/receiver`; an existing `~/.config/meshwav-receiver` is moved there the first time it runs. Release tarballs contain `meshwav`; the packages still install the two older commands (packaging for the single binary comes with the window).
+
 ## Play on a Linux computer (receiver)
 
 `meshwav-receiver` plays an agent's stream on another Linux machine, the way the Android app does (same handshake, jitter buffer, Opus and lossless PCM, loss concealment). It needs `pacat` (`pulseaudio-utils`, also works with PipeWire) for sound.
 
 ```sh
-# on the agent's machine: open a 2-minute pairing window and copy the `pair:` link it prints
-meshwav-agent pair
+# on the sending machine: open a 2-minute pairing window; it prints a 6-digit code
+meshwav pair
 
-# on the receiving machine, once
-meshwav-receiver pair 'meshwav://pair?host=100.x.y.z&port=47900&pk=...&code=123456'
+# on the receiving machine, once: type just the code (the sender is found on your tailnet)
+meshwav pair 123456
 
 # then, any time
-meshwav-receiver run
+meshwav receive run
 ```
 
-For a window instead of commands, run `meshwav-receiver-gui` (it appears in the application menu once installed from the package): it has a pairing screen where you paste the agent's link, shows Playing, Standby or Connecting, buffer and loss numbers, and a volume slider. It puts an icon in the notification area (menu: state, Show window, Quit) on desktops that support StatusNotifierItem. It connects by itself when already paired and says goodbye to the agent when closed.
+For a window instead of commands, run `meshwav-receiver-gui` (it appears in the application menu once installed from the package): it has a pairing screen where you type the sender's 6-digit code, shows Playing, Standby or Connecting, buffer and loss numbers, and a volume slider. It puts an icon in the notification area (menu: state, Show window, Quit) on desktops that support StatusNotifierItem. It connects by itself when already paired and says goodbye to the agent when closed.
 
 Only the active device gets the audio. With several receivers paired, choose with `meshwav-agent use <name>`; the others show "Standby" and take over when chosen. Ctrl-C stops the receiver and hands the agent's audio back. `--output FILE` writes the received audio as raw 48 kHz stereo s16le instead of playing it (for machines without a sound server). The receiver connects only to tailnet or loopback addresses. Releases carry it as its own package, `meshwav-receiver` (`.deb` and `.rpm`, both programs, an application-menu entry and the icon); on Arch, `packaging/receiver/PKGBUILD` builds it. From source: `cargo build --release -p meshwav-receiver -p meshwav-receiver-gui`.
 

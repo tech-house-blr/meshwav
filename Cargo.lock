@@ -1777,6 +1777,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "meshwav"
+version = "0.2.0"
+dependencies = [
+ "meshwav-agent",
+ "meshwav-receiver",
+]
+
+[[package]]
 name = "meshwav-agent"
 version = "0.2.0"
 dependencies = [
