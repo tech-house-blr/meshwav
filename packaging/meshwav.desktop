@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Meshwav
+Comment=Send this computer's audio, or play audio sent from another device, over Tailscale
+Exec=meshwav %u
+Icon=meshwav
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=x-scheme-handler/meshwav;
+StartupWMClass=meshwav

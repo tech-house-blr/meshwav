@@ -1,16 +1,18 @@
 # Maintainer: Shreyas Salankimatt <shreyassalankimatt@gmail.com>
 # Arch / AUR recipe. Builds from the tagged source. Set sha256sums to the tarball's hash for each release
 # (`updpkgsums`); SKIP is only for local testing.
-pkgname=meshwav-agent
+pkgname=meshwav
 pkgver=0.2.0
 pkgrel=1
-pkgdesc="Stream this computer's audio to a paired phone over Tailscale"
+pkgdesc="Private low-latency audio over your tailnet, send and receive"
 arch=('x86_64' 'aarch64')
 url="https://github.com/tech-house-blr/meshwav"
 license=('Apache-2.0')
-depends=('opus' 'libpulse')
+depends=('opus' 'libpulse' 'libxkbcommon' 'libglvnd')
+optdepends=('wayland: Wayland window' 'libx11: X11 window' 'tailscale: the network the devices talk over')
+conflicts=('meshwav-agent' 'meshwav-receiver')
+replaces=('meshwav-agent' 'meshwav-receiver')
 makedepends=('cargo' 'cmake' 'pkgconf')
-optdepends=('tailscale: the network the agent and the phone talk over')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
@@ -22,20 +24,23 @@ prepare() {
 build() {
     cd "meshwav-$pkgver"
     export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
-    cargo build --release --frozen -p meshwav-agent
+    cargo build --release --frozen -p meshwav
 }
 
 check() {
     cd "meshwav-$pkgver"
     export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
-    cargo test --release --frozen -p meshwav-agent
+    cargo test --release --frozen -p meshwav -p meshwav-agent -p meshwav-receiver
 }
 
 package() {
     cd "meshwav-$pkgver"
-    install -Dm755 target/release/meshwav-agent "$pkgdir/usr/bin/meshwav-agent"
+    install -Dm755 target/release/meshwav "$pkgdir/usr/bin/meshwav"
     install -Dm644 packaging/systemd/meshwav-agent.service "$pkgdir/usr/lib/systemd/user/meshwav-agent.service"
     install -Dm644 packaging/config.toml.example "$pkgdir/usr/share/doc/$pkgname/config.toml.example"
-    install -Dm644 packaging/meshwav-agent.1 "$pkgdir/usr/share/man/man1/meshwav-agent.1"
+    install -Dm644 packaging/meshwav.desktop "$pkgdir/usr/share/applications/meshwav.desktop"
+    install -Dm644 crates/linux-receiver-gui/assets/icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/meshwav.png"
+    install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/meshwav.svg"
+    install -Dm644 packaging/meshwav.1 "$pkgdir/usr/share/man/man1/meshwav.1"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
