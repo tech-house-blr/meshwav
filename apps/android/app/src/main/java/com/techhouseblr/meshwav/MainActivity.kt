@@ -55,8 +55,22 @@ class MainActivity : Activity() {
         store = PairingStore(applicationContext)
         getSharedPreferences("mw", MODE_PRIVATE).edit().remove("pairing").apply() // old shared-key line is obsolete
         val pad = (20 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad); setBackgroundColor(Color.parseColor("#101418")) }
+        var root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad); setBackgroundColor(SourcePanel.BG) }
         root.addView(TextView(this).apply { text = "Meshwav"; textSize = 28f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
+        source = SourcePanel(this)
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, pad / 2, 0, pad / 2) }
+        fun seg(t: String, on: () -> Unit) = Button(this).apply {
+            text = t; isAllCaps = false; textSize = 15f; stateListAnimator = null
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(SourcePanel.PANEL); setStroke((1 * resources.displayMetrics.density).toInt(), SourcePanel.LINE) }
+            setOnClickListener { on() }
+        }
+        recvBtn = seg("Receive") { setMode(false) }
+        sendBtn = seg("Send") { setMode(true) }
+        modeRow.addView(recvBtn, LinearLayout.LayoutParams(0, (46 * resources.displayMetrics.density).toInt(), 1f))
+        modeRow.addView(sendBtn, LinearLayout.LayoutParams(0, (46 * resources.displayMetrics.density).toInt(), 1f).apply { leftMargin = pad / 2 })
+        root.addView(modeRow)
+        val real = root
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(TextView(this).apply { text = "Run meshwav-agent --pair on the PC, then paste its pairing line here. It is needed once; the pairing is remembered."; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, pad / 2) })
         pairing = EditText(this).apply {
             hint = "meshwav://pair?host=...&pk=...&code=123456"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
@@ -89,12 +103,37 @@ class MainActivity : Activity() {
         root.addView(button, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
         status = TextView(this).apply { setTextColor(Color.parseColor("#7fd1ae")); textSize = 16f; gravity = Gravity.START; setPadding(0, pad, 0, 0) }
         root.addView(status)
-        setContentView(root)
+        recvBox = root
+        real.addView(recvBox)
+        real.addView(source.view.also { it.visibility = View.GONE })
+        setContentView(android.widget.ScrollView(this).apply { setBackgroundColor(SourcePanel.BG); isFillViewport = true; addView(real) })
+        setMode(getSharedPreferences("mw", MODE_PRIVATE).getBoolean("send_mode", false))
         CrashLog.last(this)?.let { status.text = "Last crash:\n$it" }
-        if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        requestPermissions(if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.RECORD_AUDIO) else arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         handleIntent(intent)
         tick()
     }
+
+    private lateinit var source: SourcePanel
+    private lateinit var recvBox: View
+    private lateinit var recvBtn: Button
+    private lateinit var sendBtn: Button
+
+    private fun setMode(send: Boolean) {
+        getSharedPreferences("mw", MODE_PRIVATE).edit().putBoolean("send_mode", send).apply()
+        recvBox.visibility = if (send) View.GONE else View.VISIBLE
+        source.view.visibility = if (send) View.VISIBLE else View.GONE
+        for ((b, on) in listOf(recvBtn to !send, sendBtn to send)) {
+            b.setTextColor(if (on) SourcePanel.BG else SourcePanel.TEXT)
+            (b.background as android.graphics.drawable.GradientDrawable).setColor(if (on) SourcePanel.TEAL else SourcePanel.PANEL)
+        }
+        if (send) source.start() else source.stop()
+    }
+
+    override fun onActivityResult(req: Int, res: Int, data: Intent?) { source.onResult(req, res, data) }
+
+    override fun onResume() { super.onResume(); if (source.view.visibility == View.VISIBLE) source.start() }
+    override fun onPause() { super.onPause(); source.stop() }
 
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); handleIntent(i) }
 

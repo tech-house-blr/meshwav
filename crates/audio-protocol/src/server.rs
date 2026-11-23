@@ -6,7 +6,7 @@
 //! * `XXpsk3` (kind 0x11): only while a pairing window is open. Window: 2 minutes, single use,
 //!   5 failed codes then a 60 s lockout. While closed or locked, pairing handshakes get no reply.
 //! * Pending handshakes are bounded and short-lived; msg1 intake is rate limited.
-use crate::handshake::{self, Keypair, PublicKey, Responder, SessionKeys, KIND_XX, KIND_XXPSK3};
+use crate::handshake::{self, Keypair, PublicKey, Responder, SessionKeys, KIND_HELLO, KIND_XX, KIND_XXPSK3};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -92,12 +92,17 @@ impl Server {
 
     /// Open (or restart) the pairing window with a 6-digit code. Returns false for a bad code.
     pub fn open_pairing(&mut self, code: &str, now_ms: u64) -> bool {
+        self.open_pairing_for(code, now_ms, PAIR_TTL_MS)
+    }
+
+    /// Like `open_pairing`, with a window of `ttl_ms` instead of the default 2 minutes.
+    pub fn open_pairing_for(&mut self, code: &str, now_ms: u64, ttl_ms: u64) -> bool {
         if !handshake::valid_code(code) {
             return false;
         }
         self.pairing = Some(PairingWindow {
             psk: handshake::pairing_psk(&self.identity.public, code),
-            expires_ms: now_ms + PAIR_TTL_MS,
+            expires_ms: now_ms + ttl_ms,
             failures: 0,
             locked_until_ms: 0,
         });
@@ -130,11 +135,24 @@ impl Server {
         self.gc(now_ms);
         let Some(f) = handshake::parse_frame(datagram) else { return Outcome::None };
         let key = (from, f.sid);
+        if f.kind == KIND_HELLO {
+            return self.on_hello(f.sid, f.step, now_ms);
+        }
         match f.step {
             1 => self.on_msg1(key, f.kind, f.body, now_ms),
             3 => self.on_msg3(key, f.kind, f.body, now_ms),
             _ => Outcome::None,
         }
+    }
+
+    /// Discovery probe: answer with the public key, but only while a pairing window is open and not
+    /// locked. A closed sender stays silent, so it cannot be found or fingerprinted.
+    fn on_hello(&mut self, sid: u32, step: u8, now_ms: u64) -> Outcome {
+        let open = self.pairing.as_ref().is_some_and(|w| now_ms >= w.locked_until_ms);
+        if step != 1 || !open || !self.msg1_allowed(now_ms) {
+            return Outcome::None;
+        }
+        Outcome::Reply(handshake::frame(KIND_HELLO, sid, 2, &self.identity.public))
     }
 
     fn on_msg1(&mut self, key: (SocketAddr, u32), kind: u8, body: &[u8], now_ms: u64) -> Outcome {

@@ -2,8 +2,9 @@
 Type=Application
 Name=Meshwav
 Comment=Play audio streamed from your computer over Tailscale
-Exec=meshwav-receiver-gui
+Exec=meshwav-receiver-gui %u
 Icon=meshwav-receiver
 Terminal=false
 Categories=AudioVideo;Audio;Player;
+MimeType=x-scheme-handler/meshwav;
 StartupWMClass=meshwav-receiver

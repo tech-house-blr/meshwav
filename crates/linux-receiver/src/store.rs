@@ -119,8 +119,19 @@ pub struct PairLink {
 }
 
 pub fn parse_pair_link(s: &str) -> Result<PairLink, String> {
-    let q = s.trim().strip_prefix("meshwav://pair?").ok_or("not a meshwav://pair?... link")?;
-    let get = |k: &str| q.split('&').find_map(|p| p.strip_prefix(k).and_then(|r| r.strip_prefix('='))).ok_or(format!("the link has no {k}"));
+    // Accept a link pasted with surrounding text, or wrapped over several lines by a phone screen or chat app.
+    let compact: String = s.split_whitespace().collect();
+    let at = compact.find("meshwav://pair?").ok_or("not a meshwav://pair?... link")?;
+    let q = &compact[at + "meshwav://pair?".len()..];
+    // Whitespace was removed, so words after the link stick to its last value; keep only the characters each field can hold.
+    let get = |k: &str| {
+        let v = q.split('&').find_map(|p| p.strip_prefix(k).and_then(|r| r.strip_prefix('='))).ok_or(format!("the link has no {k}"))?;
+        Ok::<&str, String>(match k {
+            "pk" => &v[..v.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(v.len())],
+            "code" | "port" => &v[..v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len())],
+            _ => v,
+        })
+    };
     let port = match get("port") {
         Ok(p) => p.parse().map_err(|_| format!("bad port {p:?}"))?,
         Err(_) => 47900,
@@ -141,6 +152,17 @@ mod tests {
         let d = std::env::temp_dir().join(format!("mw-rx-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn pair_link_survives_wrapping_and_surrounding_text() {
+        let pk = "ab".repeat(32);
+        let plain = format!("meshwav://pair?host=100.64.0.1&port=47901&pk={pk}&code=123456");
+        let want = parse_pair_link(&plain).unwrap();
+        let wrapped = format!("Pair me:\n  meshwav://pair?host=100.64.0.1&port=\n47901&pk={}\n{}&code=123456 \nthanks", &pk[..20], &pk[20..]);
+        let got = parse_pair_link(&wrapped).unwrap();
+        assert_eq!((got.host, got.port, got.key, got.code), (want.host, want.port, want.key, want.code));
+        assert!(parse_pair_link("hello").is_err());
     }
 
     #[test]
