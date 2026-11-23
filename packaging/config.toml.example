@@ -1,0 +1,20 @@
+# Meshwav agent settings: ~/.config/meshwav/config.toml
+# Flat `key = value` lines. Command-line flags override this file.
+# A typo or a bad value stops the agent at start-up and the log says which line.
+
+# Address to listen on. Default: this machine's tailscale IPv4, port 47900.
+# Only tailnet or loopback addresses are accepted.
+# bind = "100.64.0.1:47900"
+
+# Opus bitrate (kbit/s, 64-256) and frame size (5, 10 or 20 ms). The phone can change these at runtime.
+# kbps = 160
+# frame_ms = 10
+
+# Capture from this source instead of redirecting all audio. Setting it turns the redirect off.
+# source = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+
+# Leave the PC's own audio output alone (the PC keeps playing locally).
+# no_redirect = false
+
+# error, warn, info or debug.
+# log_level = "info"

@@ -42,6 +42,10 @@ fn free_port() -> u16 {
 }
 
 fn start(dir: &Path, pair: bool, port: u16) -> Agent {
+    start_with(dir, pair, port, &[])
+}
+
+fn start_with(dir: &Path, pair: bool, port: u16, extra: &[&str]) -> Agent {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_meshwav-agent"));
     cmd.env("HOME", dir)
         .env("PATH", format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap()))
@@ -52,6 +56,7 @@ fn start(dir: &Path, pair: bool, port: u16) -> Agent {
     if pair {
         cmd.arg("--pair");
     }
+    cmd.args(extra);
     let mut child = cmd.spawn().unwrap();
     let (tx, rx) = channel();
     for r in [Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>, Box::new(child.stderr.take().unwrap())] {
@@ -595,4 +600,71 @@ fn chosen_receiver_survives_an_agent_restart() {
     assert!(seqs(&ea).is_empty(), "A is standby after the restart");
     assert!(seqs(&eb).len() > 30, "chosen B streams: {}", seqs(&eb).len());
     drop(agent2);
+}
+
+fn write_config(dir: &Path, text: &str) {
+    let d = dir.join(".config/meshwav");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("config.toml"), text).unwrap();
+}
+
+#[test]
+fn pair_command_opens_a_window_on_the_running_agent() {
+    let dir = workdir("paircmd");
+    let port = free_port();
+    let agent = start(&dir, false, port); // no --pair: a service has no terminal
+    agent.wait_line("capturing from");
+    let (ok, text) = cli(&dir, &["pair"]);
+    assert!(ok, "{text}");
+    let l = text.lines().find(|l| l.starts_with("pair: meshwav://pair?")).expect("pairing line");
+    let q = l.split('?').nth(1).unwrap();
+    let get = |k: &str| q.split('&').find_map(|p| p.strip_prefix(&format!("{k}="))).unwrap().to_string();
+    let h = get("pk");
+    let mut pk = [0u8; 32];
+    for i in 0..32 {
+        pk[i] = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap();
+    }
+    let k = Keypair::generate();
+    let d = dial(port, &k, pk, Some(pairing_psk(&pk, &get("code"))), 1).expect("pairs with the code from the command");
+    let mut link = Link::new(&d);
+    assert!(!seqs(&link.pump(500)).is_empty(), "audio flows after pairing this way");
+}
+
+#[test]
+fn config_file_sets_the_log_level_and_flags_override_it() {
+    let dir = workdir("cfglevel");
+    write_config(&dir, "# quiet service\nlog_level = \"warn\"\nkbps = 96\n");
+    let port = free_port();
+    let agent = start(&dir, false, port);
+    // the control socket answers, so the agent is up, yet its info lines were not printed
+    for _ in 0..50 {
+        if cli(&dir, &["devices"]).0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(cli(&dir, &["devices"]).0);
+    while let Ok(l) = agent.lines.try_recv() {
+        assert!(!l.contains("listening on") && !l.contains("capturing from"), "info line leaked at warn level: {l}");
+    }
+    drop(agent);
+    let port = free_port();
+    let agent = start_with(&dir, false, port, &["--log-level", "info"]);
+    agent.wait_line("listening on");
+}
+
+#[test]
+fn a_bad_config_stops_the_agent_with_the_reason() {
+    for (text, want) in [("kbps = fast\n", "not a number"), ("kbbs = 96\n", "unknown setting `kbbs`"), ("log_level = loud\n", "not one of")] {
+        let dir = workdir("badcfg");
+        write_config(&dir, text);
+        let o = Command::new(env!("CARGO_BIN_EXE_meshwav-agent"))
+            .env("HOME", &dir)
+            .args(["--bind", &format!("127.0.0.1:{}", free_port()), "--source", "fake.monitor"])
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{text}: {err}");
+        assert!(err.contains(want) && err.contains("config.toml"), "{err}");
+    }
 }
