@@ -7,10 +7,75 @@ use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Snapshot, Status};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon-256.png");
+const TRAY_ICON: &[u8] = include_bytes!("../assets/tray-64.png");
+
+/// RGBA8 pixels of an embedded PNG.
+fn decode_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let mut r = png::Decoder::new(bytes).read_info().ok()?;
+    let mut buf = vec![0; r.output_buffer_size()];
+    let info = r.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    Some((buf, info.width, info.height))
+}
+
+enum TrayCmd {
+    Show,
+    Quit,
+}
+
+/// The notification-area icon (StatusNotifierItem): shows the state on hover, and offers Show window and Quit.
+struct Tray {
+    state: String,
+    tx: Sender<TrayCmd>,
+    ctx: egui::Context,
+}
+
+impl Tray {
+    fn send(&self, c: TrayCmd) {
+        let _ = self.tx.send(c);
+        self.ctx.request_repaint();
+    }
+}
+
+impl ksni::Tray for Tray {
+    fn id(&self) -> String {
+        "meshwav-receiver".into()
+    }
+    fn title(&self) -> String {
+        "Meshwav".into()
+    }
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let Some((mut data, w, h)) = decode_png(TRAY_ICON) else { return vec![] };
+        for px in data.chunks_exact_mut(4) {
+            px.rotate_right(1); // RGBA to the ARGB the protocol wants
+        }
+        vec![ksni::Icon { width: w as i32, height: h as i32, data }]
+    }
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip { title: "Meshwav".into(), description: self.state.clone(), ..Default::default() }
+    }
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.send(TrayCmd::Show);
+    }
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::StandardItem;
+        vec![
+            StandardItem { label: self.state.clone(), enabled: false, ..Default::default() }.into(),
+            ksni::MenuItem::Separator,
+            StandardItem { label: "Show window".into(), activate: Box::new(|t: &mut Self| t.send(TrayCmd::Show)), ..Default::default() }.into(),
+            StandardItem { label: "Quit".into(), activate: Box::new(|t: &mut Self| t.send(TrayCmd::Quit)), ..Default::default() }.into(),
+        ]
+    }
+}
 
 const BG: Color32 = Color32::from_rgb(0x17, 0x19, 0x1c);
 const PANEL: Color32 = Color32::from_rgb(0x1f, 0x22, 0x26);
@@ -52,6 +117,9 @@ struct App {
     pairing: Option<Pairing>,
     message: Option<(String, Color32)>,
     confirm_forget: bool,
+    tray: Option<ksni::blocking::Handle<Tray>>,
+    tray_cmds: Receiver<TrayCmd>,
+    tray_state: String,
 }
 
 fn volume_path(dir: &std::path::Path) -> PathBuf {
@@ -61,6 +129,14 @@ fn volume_path(dir: &std::path::Path) -> PathBuf {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         style(&cc.egui_ctx);
+        let (tx, rx) = channel();
+        let tray = {
+            use ksni::blocking::TrayMethods;
+            Tray { state: "Starting".into(), tx, ctx: cc.egui_ctx.clone() }
+                .spawn()
+                .map_err(|e| eprintln!("meshwav-receiver-gui: no tray icon ({e}); the window works without it"))
+                .ok()
+        };
         let dir = store::default_dir();
         let paired = store::load_paired(&dir).ok().flatten();
         let start_volume = std::fs::read_to_string(volume_path(&dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100u32).min(100);
@@ -75,6 +151,9 @@ impl App {
             pairing: None,
             message: None,
             confirm_forget: false,
+            tray,
+            tray_cmds: rx,
+            tray_state: String::new(),
         };
         if app.paired.is_some() {
             app.start();
@@ -234,6 +313,16 @@ fn row(ui: &mut egui::Ui, label: &str, value: String) {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll();
+        while let Ok(c) = self.tray_cmds.try_recv() {
+            match c {
+                TrayCmd::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                TrayCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+        self.sync_tray();
         ctx.request_repaint_after(Duration::from_millis(250));
         egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(22.0))).show(ctx, |ui| {
             ui.label(RichText::new("Meshwav").heading().strong());
@@ -250,11 +339,29 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
         self.stop();
+        if let Some(t) = self.tray.take() {
+            t.shutdown().wait();
+        }
         let _ = std::fs::write(volume_path(&self.dir), self.volume.percent().to_string());
     }
 }
 
 impl App {
+    /// Keep the tray's hover text and menu in step with the window.
+    fn sync_tray(&mut self) {
+        let Some(t) = &self.tray else { return };
+        let snap = self.worker.as_ref().map(|w| w.status.snapshot());
+        let state = match (&self.paired, &snap) {
+            (None, _) => "Not paired".to_string(),
+            (Some(_), None) => "Stopped".to_string(),
+            (Some(_), Some(s)) => headline(true, s).0.to_string(),
+        };
+        if state != self.tray_state {
+            self.tray_state = state.clone();
+            t.update(|tray| tray.state = state);
+        }
+    }
+
     fn pairing_screen(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Not paired with an agent yet.").color(MUTED));
         ui.add_space(10.0);
@@ -353,9 +460,14 @@ impl App {
     }
 }
 
+fn window_icon() -> egui::IconData {
+    let (rgba, width, height) = decode_png(WINDOW_ICON).unwrap_or((vec![0; 4], 1, 1));
+    egui::IconData { rgba, width, height }
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title("Meshwav").with_app_id("meshwav-receiver"),
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title("Meshwav").with_app_id("meshwav-receiver"),
         ..Default::default()
     };
     eframe::run_native("Meshwav", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
