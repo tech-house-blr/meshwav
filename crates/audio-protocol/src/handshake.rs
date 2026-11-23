@@ -19,6 +19,8 @@ pub type PublicKey = [u8; 32];
 /// Datagram kinds (byte 3 of the frame; audio packet types are 1..=3, so they never collide).
 pub const KIND_XX: u8 = 0x10;
 pub const KIND_XXPSK3: u8 = 0x11;
+/// Pairing discovery probe: a sender with an open pairing window answers with its static public key.
+pub const KIND_HELLO: u8 = 0x12;
 const FRAME_HEADER: usize = 9;
 
 #[derive(Clone)]
@@ -244,7 +246,7 @@ pub fn frame(kind: u8, sid: u32, step: u8, body: &[u8]) -> Vec<u8> {
 
 /// True if the datagram is a handshake frame (as opposed to an audio-layer packet).
 pub fn is_handshake(d: &[u8]) -> bool {
-    d.len() >= FRAME_HEADER && d[0..2] == *b"MW" && d[2] == crate::packet::VERSION && (KIND_XX..=KIND_XXPSK3).contains(&d[3])
+    d.len() >= FRAME_HEADER && d[0..2] == *b"MW" && d[2] == crate::packet::VERSION && (KIND_XX..=KIND_HELLO).contains(&d[3])
 }
 
 pub fn parse_frame(d: &[u8]) -> Option<Frame<'_>> {

@@ -302,3 +302,20 @@ fn device_names_are_sanitised() {
     let Outcome::Established { name, .. } = srv.handle(addr(1), &frame(KIND_XXPSK3, 1, 3, &m3), 1) else { panic!() };
     assert!(name.len() <= MAX_DEVICE_NAME && !name.chars().any(char::is_control), "{name:?}");
 }
+
+#[test]
+fn hello_is_answered_only_while_pairing_is_open_and_not_locked() {
+    let mut s = Server::new(kp(0x22), vec![]);
+    let hello = frame(KIND_HELLO, 7, 1, &[]);
+    assert!(matches!(s.handle(addr(1), &hello, 1_000), Outcome::None), "closed: silent");
+    assert!(s.open_pairing("123456", 1_000));
+    match s.handle(addr(1), &hello, 2_000) {
+        Outcome::Reply(r) => {
+            let f = parse_frame(&r).unwrap();
+            assert_eq!((f.kind, f.sid, f.step, f.body), (KIND_HELLO, 7, 2, &kp(0x22).public[..]));
+        }
+        o => panic!("{o:?}"),
+    }
+    assert!(matches!(s.handle(addr(1), &frame(KIND_HELLO, 7, 3, &[]), 2_000), Outcome::None), "only step 1 is a probe");
+    assert!(matches!(s.handle(addr(1), &hello, 1_000 + PAIR_TTL_MS + 1), Outcome::None), "expired: silent");
+}
