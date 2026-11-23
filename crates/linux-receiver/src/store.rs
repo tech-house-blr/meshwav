@@ -1,0 +1,186 @@
+//! On-disk state of the receiver under `~/.config/meshwav-receiver/` (or `--dir`): its own identity key
+//! and the one agent it is paired with. Files are written with mode 0600 (atomic replace).
+use audio_protocol::handshake::{hex, Keypair, PublicKey};
+use std::io::{Error, ErrorKind, Write};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+pub fn default_dir() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(x).join("meshwav-receiver");
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/meshwav-receiver")
+}
+
+fn bad(msg: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, msg.into())
+}
+
+pub fn unhex32(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let mut k = [0u8; 32];
+    for (i, b) in k.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(k)
+}
+
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = opts.open(&tmp)?;
+    f.write_all(contents.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
+#[cfg(unix)]
+fn check_private(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+        return Err(bad(format!("{} must not be accessible by others (chmod 600)", path.display())));
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn check_private(_: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The receiver's long-term key; created on first use.
+pub fn load_or_create_identity(dir: &Path) -> std::io::Result<Keypair> {
+    let path = dir.join("identity");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            check_private(&path)?;
+            let k = unhex32(&s).ok_or_else(|| bad(format!("{} is not a 64-digit hex key", path.display())))?;
+            Ok(Keypair::from_private(k))
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let kp = Keypair::generate();
+            write_private(&path, &format!("{}\n", hex(&kp.private)))?;
+            Ok(kp)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Paired {
+    pub agent: SocketAddr,
+    pub key: PublicKey,
+}
+
+pub fn save_paired(dir: &Path, p: &Paired) -> std::io::Result<()> {
+    write_private(&dir.join("agent"), &format!("addr={}\nkey={}\n", p.agent, hex(&p.key)))
+}
+
+pub fn load_paired(dir: &Path) -> std::io::Result<Option<Paired>> {
+    let path = dir.join("agent");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('='))).map(str::trim);
+    let agent = get("addr").and_then(|a| a.parse().ok()).ok_or_else(|| bad(format!("{}: bad addr", path.display())))?;
+    let key = get("key").and_then(unhex32).ok_or_else(|| bad(format!("{}: bad key", path.display())))?;
+    Ok(Some(Paired { agent, key }))
+}
+
+pub fn forget(dir: &Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(dir.join("agent")) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// What the agent prints: `meshwav://pair?host=H&port=P&pk=HEX&code=123456`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PairLink {
+    pub host: String,
+    pub port: u16,
+    pub key: PublicKey,
+    pub code: String,
+}
+
+pub fn parse_pair_link(s: &str) -> Result<PairLink, String> {
+    let q = s.trim().strip_prefix("meshwav://pair?").ok_or("not a meshwav://pair?... link")?;
+    let get = |k: &str| q.split('&').find_map(|p| p.strip_prefix(k).and_then(|r| r.strip_prefix('='))).ok_or(format!("the link has no {k}"));
+    let port = match get("port") {
+        Ok(p) => p.parse().map_err(|_| format!("bad port {p:?}"))?,
+        Err(_) => 47900,
+    };
+    let key = unhex32(get("pk")?).ok_or("the agent key (pk) is not 64 hex digits")?;
+    let code = get("code")?.to_string();
+    if !audio_protocol::handshake::valid_code(&code) {
+        return Err("the pairing code must be 6 digits".into());
+    }
+    Ok(PairLink { host: get("host")?.to_string(), port, key, code })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mw-rx-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn identity_is_created_once_and_private() {
+        let d = tmp("id");
+        let a = load_or_create_identity(&d).unwrap();
+        let b = load_or_create_identity(&d).unwrap();
+        assert_eq!(a.public, b.public);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(d.join("identity")).unwrap().permissions().mode() & 0o777, 0o600);
+            std::fs::set_permissions(d.join("identity"), std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(load_or_create_identity(&d).is_err(), "a world-readable key is refused");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn paired_agent_round_trips_and_can_be_forgotten() {
+        let d = tmp("paired");
+        assert_eq!(load_paired(&d).unwrap(), None);
+        let p = Paired { agent: "100.72.29.9:47900".parse().unwrap(), key: [7; 32] };
+        save_paired(&d, &p).unwrap();
+        assert_eq!(load_paired(&d).unwrap(), Some(p));
+        assert!(forget(&d).unwrap());
+        assert!(!forget(&d).unwrap());
+        assert_eq!(load_paired(&d).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pair_link_parses_and_rejects_bad_input() {
+        let k = hex(&[0xab; 32]);
+        let l = parse_pair_link(&format!("meshwav://pair?host=100.72.29.9&port=47901&pk={k}&code=123456")).unwrap();
+        assert_eq!((l.host.as_str(), l.port, l.key, l.code.as_str()), ("100.72.29.9", 47901, [0xab; 32], "123456"));
+        assert_eq!(parse_pair_link(&format!("meshwav://pair?host=h&pk={k}&code=000001")).unwrap().port, 47900);
+        assert!(parse_pair_link("https://example.com").is_err());
+        assert!(parse_pair_link(&format!("meshwav://pair?host=h&pk={k}&code=12345")).is_err());
+        assert!(parse_pair_link("meshwav://pair?host=h&pk=zz&code=123456").is_err());
+        assert!(parse_pair_link(&format!("meshwav://pair?pk={k}&code=123456")).is_err());
+    }
+}
