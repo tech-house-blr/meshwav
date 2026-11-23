@@ -1,5 +1,5 @@
 #!/bin/bash
-# Click-loopback latency test. Run on the machine that runs meshwav-agent.
+# Click-loopback latency test. Run on the machine that runs the sender (meshwav send).
 #
 # Setup (see docs/measurements.md):
 #   - the agent runs with `--no-redirect --source mwtest.monitor`

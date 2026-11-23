@@ -1,14 +1,14 @@
-//! The sending side: capture system audio, encode Opus, send AEAD-sealed UDP to the paired receiver
-//! that most recently completed a Noise handshake. The receiver keeps the session alive with
+//! The sending side: capture system audio, encode Opus or lossless PCM, send AEAD-sealed UDP to the active paired
+//! receiver (several can be connected; see `meshwav use`). The receiver keeps the session alive with
 //! sealed `Punch` packets about once a second; the agent stops sending after `PEER_TIMEOUT`.
 //!
-//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10] [--codec opus|lossless] [--config PATH] [--log-level LEVEL]
+//!   meshwav send [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10] [--codec opus|lossless] [--config PATH] [--log-level LEVEL]
 //!
 //! Redirect (default): while a receiver is connected, the default output becomes a virtual "Meshwav"
 //! sink and every stream is moved onto it, so the PC plays nothing locally. The previous output is
 //! restored 15 s after the receiver goes away and on exit. `--no-redirect` or `--source` turn it off.
 //!
-//! Pairing: `meshwav-agent pair` (against the running agent), `--pair` or typing `pair` on stdin opens a 2-minute window with a 6-digit code.
+//! Pairing: `meshwav pair` (against the running agent), `--pair` or typing `pair` on stdin opens a 2-minute window with a 6-digit code.
 //! Defaults: bind = <tailscale ipv4>:47900, identity = ~/.config/meshwav/identity and paired
 //! devices = ~/.config/meshwav/authorized_peers (both 0600, created on first use). The listener
 //! refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
@@ -418,7 +418,7 @@ fn run_command(
     }
 }
 
-/// `meshwav-agent devices | use <device|auto> | rename <device> <new name>`: talk to the running agent.
+/// `meshwav devices | use <device|auto> | rename <device> <new name>`: talk to the running agent.
 fn client(args: &[String], sock_path: &std::path::Path) -> ! {
     let mut words: Vec<&str> = Vec::new();
     let mut it = args.iter().skip(1);
@@ -435,7 +435,7 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
         ["use", rest @ ..] if !rest.is_empty() => format!("use\t{}", rest.join(" ")),
         ["rename", dev, rest @ ..] if !rest.is_empty() => format!("rename\t{dev}\t{}", rest.join(" ")),
         _ => {
-            eprintln!("usage: meshwav-agent devices | pair | use <device|auto> | rename <device> <new name>");
+            eprintln!("usage: meshwav devices | pair | use <device|auto> | rename <device> <new name>");
             std::process::exit(2);
         }
     };
@@ -451,7 +451,7 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
     std::process::exit(if reply.starts_with("error") { 1 } else { 0 });
 }
 
-/// Entry point shared by `meshwav-agent` and `meshwav send`. `args[0]` is the program name.
+/// Entry point shared by `meshwav send` and the `meshwav-agent` compatibility command. `args[0]` is the program name.
 pub fn run(args: Vec<String>) {
     let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
     let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
@@ -529,7 +529,7 @@ pub fn run(args: Vec<String>) {
     if args.iter().any(|a| a == "--pair") {
         println!("{}", open_window());
     } else if server.lock().unwrap().authorized().is_empty() {
-        info!("no paired devices yet: run `meshwav-agent pair`");
+        info!("no paired devices yet: run `meshwav pair`");
     }
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
@@ -663,7 +663,7 @@ pub fn run(args: Vec<String>) {
         });
     }
 
-    // Local control socket (owner-only): `meshwav-agent devices | use | rename` talk to it.
+    // Local control socket (owner-only): `meshwav devices | use | rename` talk to it.
     {
         let _ = std::fs::remove_file(&control_path); // a stale socket from a crashed run; the UDP bind above already proved we are the only agent
         let old_umask = unsafe { libc::umask(0o177) };

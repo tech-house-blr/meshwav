@@ -169,7 +169,7 @@ fn connect(s: &Settings, code: Option<&str>, stop: &AtomicBool) -> Result<Conn, 
     }
     let reply = reply.ok_or_else(|| {
         Hs::Retry(if code.is_some() {
-            "no answer from the agent. Is its pairing window open (meshwav-agent pair, valid 2 minutes)?".into()
+            "no answer from the agent. Is its pairing window open (meshwav pair, valid 2 minutes)?".into()
         } else {
             "no answer from the agent".into()
         })

@@ -82,7 +82,7 @@ pub fn pair_with_code(
     }
     let senders = find_senders();
     if senders.is_empty() {
-        return Err("No device is showing a pairing code. Start pairing on the sender first (Start in Send mode on the phone, or `meshwav-agent pair`).".into());
+        return Err("No device is showing a pairing code. Start pairing on the sender first (Start in Send mode on the phone, or `meshwav pair`).".into());
     }
     let mut last = String::new();
     for f in senders {

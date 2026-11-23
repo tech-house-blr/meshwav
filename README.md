@@ -1,22 +1,21 @@
 # Meshwav
 
-Private, low-latency system-audio streaming from a computer to an Android phone over Tailscale.
+Private, low-latency system-audio streaming between your own devices over Tailscale: a Linux computer or an Android phone sends, a Linux computer or an Android phone plays.
 No cloud, no relay servers, no third-party services.
 
-**Status: early development (pre-release).** The Linux desktop agent and the Android receiver work end to end on a tailnet.
-There are no release builds yet, the Windows capture path is not implemented, and the security design has not had an external review.
+**Status: early development.** Sending from Linux, receiving on Android or Linux, and sending from an Android phone work end to end on a tailnet. Releases exist (v0.1.0, v0.2.0), but the single `meshwav` package described below is on `main` and not in a release yet. Windows is not implemented, latency has not reached its target (see [docs/measurements.md](docs/measurements.md)), and the security design has not had an external review.
 See [docs/milestones.md](docs/milestones.md) for what is done and what is open.
 
 ## How it works
 
-- The desktop agent captures system audio (PulseAudio/PipeWire via `parec` on Linux), encodes it (Opus, or lossless PCM with automatic fall back to Opus) and sends it over UDP to a paired phone.
-- The agent binds only to Tailscale addresses and refuses anything else.
+- A sender captures audio, encodes it (Opus, or lossless PCM) and sends it over UDP to the one paired receiver that is active; others stay connected on standby. On Linux the sender is `meshwav send` (PulseAudio/PipeWire via `parec`); on Android it is the app's Send mode (other apps' audio, via Android's audio playback capture).
+- Senders and receivers listen and connect only on Tailscale (or loopback) addresses and refuse anything else.
 - Devices pair once with a six-digit code (Noise handshake). Keys are then pinned and each session gets fresh keys. Packets are authenticated and encrypted (ChaCha20-Poly1305) with a replay window.
 - The receiver uses an adaptive jitter buffer, loss concealment and automatic reconnect.
 
 ## Install (Linux)
 
-One package, `meshwav`, does both directions: the window, the sender and the receiver. Packages are attached to each [GitHub release](https://github.com/tech-house-blr/meshwav/releases) for x86_64 and aarch64:
+One package, `meshwav`, does both directions: the window, the sender and the receiver. Packages are meant to be attached to each [GitHub release](https://github.com/tech-house-blr/meshwav/releases) for x86_64 and aarch64. The existing releases (up to v0.2.0) still hold the older separate `meshwav-agent` and `meshwav-receiver` packages; the single package comes with the next release, and until then you can build it (`packaging/build-deb.sh`, `build-rpm.sh`, `PKGBUILD`):
 
 ```sh
 sudo apt install ./meshwav_VERSION_ARCH.deb      # Debian, Ubuntu, Raspberry Pi OS
@@ -102,7 +101,9 @@ Full list at the top of `crates/desktop-agent/src/lib.rs`.
 
 ## Android receiver
 
-Kotlin app in `apps/android` (Gradle). Build with `./gradlew assembleDebug` inside that directory. Pair by typing only the 6-digit code: on the computer open a pairing window (`meshwav pair`, or Send, Show pairing code in the window), then on the phone choose Receive, type the code and tap Pair. While the window is open the sender tells waiting phones on the tailnet where it is, so no address or key is typed. A `meshwav://pair` link still works under "Use a pairing link instead". The app remembers every sender it has paired with. Under "Paired senders" you can Connect to one, Make default, or Forget it. With "Reconnect automatically" on (the default) it connects to the default sender whenever the app opens, so it shows as online without any tap; Disconnect stops it until you ask again, and tapping Pair always stops the current connection first so a new code is used. Lossless PCM is a Quality setting on the receiving side: in the phone app, and in the Linux receive window (or `meshwav receive run --lossless`).
+Kotlin app in `apps/android` (Gradle, version 0.7.1). Build with `./gradlew assembleDebug` inside that directory (it needs the native library from `crates/android-spike`, built with `cargo ndk`). Release APKs, when attached, are debug-signed: there is no release signing key yet. The app has a Receive / Send switch (the last mode is remembered). Receive: pair by typing only the 6-digit code: on the computer open a pairing window (`meshwav pair`, or Send, Show pairing code in the window), then on the phone choose Receive, type the code and tap Pair. While the window is open the sender tells waiting phones on the tailnet where it is, so no address or key is typed. A `meshwav://pair` link still works under "Use a pairing link instead". The app remembers every sender it has paired with. Under "Paired senders" you can Connect to one, Make default, or Forget it. With "Reconnect automatically" on (the default) it connects to the default sender whenever the app opens, so it shows as online without any tap; Disconnect stops it until you ask again, and tapping Pair always stops the current connection first so a new code is used. Lossless PCM is a Quality setting on the receiving side: in the phone app, and in the Linux receive window (or `meshwav receive run --lossless`).
+
+Send mode turns the phone into a sender: tap Start, allow the screen-capture prompt (Android's own wording; only audio is taken), choose Lossless or Opus, and the app shows a pairing code, a link, and sent / dropped / level numbers. On the computer, run `meshwav pair 123456` or use the Receive window's pairing screen with the code; the computer finds the phone on the tailnet. While sending, media volume on the phone is held at 0 and restored afterwards (some phones pause playback at 0). Lossless here is raw 48 kHz 16-bit audio as captured after Android's mixer, so it is not bit-perfect; apps that block capture may be silent. The computer picks its output under Receive (`meshwav receive outputs`, `run --device SINK`).
 
 ## Tests
 
