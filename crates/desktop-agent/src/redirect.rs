@@ -114,7 +114,7 @@ impl<A: Audio> Redirect<A> {
     pub fn start(&mut self) -> Result<(), String> {
         if let Some(prev) = self.state_file.as_deref().and_then(read_state) {
             self.prev = Some(prev);
-            println!("redirect: restoring the output a previous run left redirected");
+            info!("redirect: restoring the output a previous run left redirected");
             self.release();
         }
         self.audio.ensure_sink()
@@ -152,7 +152,7 @@ impl<A: Audio> Redirect<A> {
             _ => self.pick_restore(None), // default already ours (stale): fall back to any real output
         };
         let Some(prev) = prev else {
-            eprintln!("redirect: no real output sink to hand back later; not redirecting");
+            warn!("redirect: no real output sink to hand back later; not redirecting");
             return;
         };
         if !self.audio.set_default(SINK_NAME) {
@@ -161,7 +161,7 @@ impl<A: Audio> Redirect<A> {
         if let Some(f) = &self.state_file {
             write_state(f, &prev);
         }
-        println!("redirect: all audio now goes to the receiver (was {prev})");
+        info!("redirect: all audio now goes to the receiver (was {prev})");
         self.prev = Some(prev);
         self.move_all_to(SINK_NAME);
     }
@@ -171,7 +171,7 @@ impl<A: Audio> Redirect<A> {
     fn maintain(&mut self) {
         match self.audio.default_sink() {
             Some(c) if c != SINK_NAME => {
-                println!("redirect: default output changed to {c}; keeping the redirect");
+                info!("redirect: default output changed to {c}; keeping the redirect");
                 self.prev = Some(c.clone());
                 if let Some(f) = &self.state_file {
                     write_state(f, &c);
@@ -204,9 +204,9 @@ impl<A: Audio> Redirect<A> {
                         self.audio.move_input(i.id, t);
                     }
                 }
-                println!("redirect: audio back on {t}");
+                info!("redirect: audio back on {t}");
             }
-            None => eprintln!("redirect: no output sink left to restore"),
+            None => warn!("redirect: no output sink left to restore"),
         }
         if let Some(f) = &self.state_file {
             let _ = std::fs::remove_file(f);

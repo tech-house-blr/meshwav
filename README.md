@@ -23,9 +23,24 @@ cargo build --release -p meshwav-agent
 ./target/release/meshwav-agent --pair
 ```
 
+### Run it as a service (systemd, per user)
+
+```sh
+scripts/install-user-service.sh        # copies the binary to ~/.local/bin, installs and starts the unit
+meshwav-agent pair                     # prints a code for the app; works while the service runs
+systemctl --user status meshwav-agent
+journalctl --user -u meshwav-agent -f
+loginctl enable-linger "$USER"         # optional: start at boot without logging in
+```
+
+It is a user service because it needs your audio session. If the tailnet is not up yet the agent exits and systemd retries every 5 s. Stopping it hands the PC's audio output back first.
+
+Settings live in `~/.config/meshwav/config.toml` (example: `packaging/config.toml.example`): `bind`, `kbps`, `frame_ms`, `source`, `no_redirect`, `log_level`. Flags override the file, and a typo or bad value stops the agent with the line number. Restart the service after editing it.
+
 Several phones can be paired and connected at once; one gets the audio. With the agent running, from another terminal:
 
 ```
+meshwav-agent pair                   # open a 2-minute pairing window on the running agent
 meshwav-agent devices                # who is paired, online, active or standby
 meshwav-agent use "Phone name"       # send the audio there (name, name prefix or key prefix)
 meshwav-agent use auto               # first connected device keeps it again
@@ -34,7 +49,7 @@ meshwav-agent rename "Phone name" "New name"
 
 The chosen device is remembered across restarts. A device that is not chosen never takes the stream from the active one.
 
-Common flags: `--bind IP:PORT`, `--kbps 160`, `--frame-ms 10`, `--source SINK.monitor`, `--no-redirect`, `--identity PATH`, `--authorized PATH`.
+Common flags: `--bind IP:PORT`, `--kbps 160`, `--frame-ms 10`, `--source SINK.monitor`, `--no-redirect`, `--identity PATH`, `--authorized PATH`, `--config PATH`, `--log-level error|warn|info|debug`.
 Full list at the top of `crates/desktop-agent/src/main.rs`.
 
 ## Android receiver

@@ -2,17 +2,20 @@
 //! that most recently completed a Noise handshake. The receiver keeps the session alive with
 //! sealed `Punch` packets about once a second; the agent stops sending after `PEER_TIMEOUT`.
 //!
-//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10]
+//!   meshwav-agent [--pair] [--bind IP:PORT] [--identity PATH] [--authorized PATH] [--source SINK.monitor] [--no-redirect] [--kbps 160] [--frame-ms 10] [--config PATH] [--log-level LEVEL]
 //!
 //! Redirect (default): while a receiver is connected, the default output becomes a virtual "Meshwav"
 //! sink and every stream is moved onto it, so the PC plays nothing locally. The previous output is
 //! restored 15 s after the receiver goes away and on exit. `--no-redirect` or `--source` turn it off.
 //!
-//! Pairing: `--pair` (or typing `pair` on stdin) opens a 2-minute window with a 6-digit code.
+//! Pairing: `meshwav-agent pair` (against the running agent), `--pair` or typing `pair` on stdin opens a 2-minute window with a 6-digit code.
 //! Defaults: bind = <tailscale ipv4>:47900, identity = ~/.config/meshwav/identity and paired
 //! devices = ~/.config/meshwav/authorized_peers (both 0600, created on first use). The listener
 //! refuses non-tailnet addresses. Capture uses `parec` (PulseAudio or
 //! PipeWire-pulse) on the default sink's monitor.
+#[macro_use]
+mod log;
+mod config;
 mod fleet;
 mod redirect;
 mod store;
@@ -164,7 +167,7 @@ impl Fleet {
                 Some(s) => format!("'{}'", s.name),
                 None => "nobody".to_string(),
             };
-            println!("active receiver: {} (was {})", label(new), label(self.active));
+            info!("active receiver: {} (was {})", label(new), label(self.active));
             self.active = new;
         }
         let active = self.active;
@@ -237,15 +240,34 @@ fn new_code() -> String {
     }
 }
 
-fn print_pairing(addr: SocketAddr, public: &[u8; 32], code: &str) {
-    println!("pairing code {code} (valid 2 minutes, one use)");
-    println!(
-        "pair: meshwav://pair?host={}&port={}&pk={}&code={code}",
+fn pairing_text(addr: SocketAddr, public: &[u8; 32], code: &str) -> String {
+    format!(
+        "pairing code {code} (valid 2 minutes, one use)\npair: meshwav://pair?host={}&port={}&pk={}&code={code}\nor enter in the app: host={} port={} pk={} code={code}",
+        addr.ip(),
+        addr.port(),
+        hex(public),
         addr.ip(),
         addr.port(),
         hex(public)
-    );
-    println!("or enter in the app: host={} port={} pk={} code={code}", addr.ip(), addr.port(), hex(public));
+    )
+}
+
+fn fatal(msg: &str) -> ! {
+    eprintln!("meshwav-agent: {msg}");
+    std::process::exit(2);
+}
+
+/// The settings file: `--config PATH` (must exist), else `config.toml` in the config dir (optional).
+fn load_config(args: &[String], cfg_dir: &std::path::Path) -> config::Config {
+    let (path, required) = match arg(args, "--config") {
+        Some(p) => (std::path::PathBuf::from(p), true),
+        None => (cfg_dir.join("config.toml"), false),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => config::Config::parse(&text).unwrap_or_else(|e| fatal(&format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => config::Config::default(),
+        Err(e) => fatal(&format!("cannot read {}: {e}", path.display())),
+    }
 }
 
 fn tailscale_ip() -> Option<String> {
@@ -408,10 +430,11 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
     }
     let line = match words.as_slice() {
         ["devices"] => "devices".to_string(),
+        ["pair"] => "pair".to_string(),
         ["use", rest @ ..] if !rest.is_empty() => format!("use\t{}", rest.join(" ")),
         ["rename", dev, rest @ ..] if !rest.is_empty() => format!("rename\t{dev}\t{}", rest.join(" ")),
         _ => {
-            eprintln!("usage: meshwav-agent devices | use <device|auto> | rename <device> <new name>");
+            eprintln!("usage: meshwav-agent devices | pair | use <device|auto> | rename <device> <new name>");
             std::process::exit(2);
         }
     };
@@ -429,18 +452,26 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let kbps: u32 = arg(&args, "--kbps")
-        .map(|v| v.parse().expect("--kbps"))
-        .unwrap_or(160);
-    let frame_ms: u32 = arg(&args, "--frame-ms")
-        .map(|v| v.parse().expect("--frame-ms"))
-        .unwrap_or(10);
     let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
     let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
-    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename")) {
+    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename" | "pair")) {
         client(&args, &control_path);
     }
-    let bind = arg(&args, "--bind").unwrap_or_else(|| match tailscale_ip() {
+    let cfg = load_config(&args, &cfg_dir);
+    let origin = |flag: &str, key: &str| if arg(&args, flag).is_some() { flag.to_string() } else { format!("config.toml `{key}`") };
+    let setting = |flag: &str, key: &str| arg(&args, flag).or_else(|| cfg.get(key).map(String::from));
+    let number = |flag: &str, key: &str, default: u32| match setting(flag, key) {
+        None => default,
+        Some(v) => v.parse().unwrap_or_else(|_| fatal(&format!("{}: `{v}` is not a number", origin(flag, key)))),
+    };
+    let kbps = number("--kbps", "kbps", 160);
+    let frame_ms = number("--frame-ms", "frame_ms", 10);
+    if let Some(v) = setting("--log-level", "log_level") {
+        log::set_level(log::parse_level(&v).unwrap_or_else(|| fatal(&format!("{}: `{v}` is not one of error, warn, info, debug", origin("--log-level", "log_level")))));
+    }
+    let source = setting("--source", "source");
+    let no_redirect = args.iter().any(|a| a == "--no-redirect") || cfg.flag("no_redirect").unwrap_or_else(|e| fatal(&e)).unwrap_or(false);
+    let bind = setting("--bind", "bind").unwrap_or_else(|| match tailscale_ip() {
         Some(ip) => format!("{ip}:{DEFAULT_PORT}"),
         None => {
             eprintln!("cannot determine tailscale IP; pass --bind IP:PORT");
@@ -471,9 +502,9 @@ fn main() {
         std::process::exit(2);
     }
     let sock = UdpSocket::bind(addr).expect("bind failed");
-    println!("meshwav-agent listening on {addr}");
-    println!("agent public key: {}", hex(&identity.public));
-    println!("paired devices: {}", authorized.len());
+    info!("meshwav-agent listening on {addr}");
+    info!("agent public key: {}", hex(&identity.public));
+    info!("paired devices: {}", authorized.len());
     let t0 = Instant::now();
     let now_ms = move || t0.elapsed().as_millis() as u64;
     let public = identity.public;
@@ -483,18 +514,19 @@ fn main() {
         move || {
             let code = new_code();
             server.lock().unwrap().open_pairing(&code, now_ms());
-            print_pairing(addr, &public, &code);
+            pairing_text(addr, &public, &code)
         }
     };
+    let pair_cmd = open_window.clone();
     if args.iter().any(|a| a == "--pair") {
-        open_window();
+        println!("{}", open_window());
     } else if server.lock().unwrap().authorized().is_empty() {
-        println!("no paired devices yet: restart with --pair, or type `pair` + Enter here");
+        info!("no paired devices yet: run `meshwav-agent pair`");
     }
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             match line {
-                Ok(l) if l.trim() == "pair" => open_window(),
+                Ok(l) if l.trim() == "pair" => println!("{}", open_window()),
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -534,7 +566,7 @@ fn main() {
                             if newly_paired {
                                 let list = server.lock().unwrap().authorized().to_vec();
                                 if let Err(e) = store::save_authorized(&authorized_path, &list) {
-                                    eprintln!("could not save paired devices: {e}");
+                                    warn!("could not save paired devices: {e}");
                                 }
                             }
                             let mut cur = session.lock().unwrap();
@@ -542,7 +574,7 @@ fn main() {
                             let old = cur.sessions.iter().position(|s| s.peer == peer);
                             let rekey = old.is_some_and(|i| cur.sessions[i].online());
                             if newly_paired || !rekey {
-                                println!(
+                                info!(
                                     "{} '{name}' (key {}) connected from {from}",
                                     if newly_paired { "paired new device" } else { "device" },
                                     &hex(&peer)[..16]
@@ -571,7 +603,7 @@ fn main() {
                             cur.sessions.push(s);
                             cur.update(&sock);
                         }
-                        Outcome::Rejected(why) => eprintln!("handshake from {from} rejected: {why}"),
+                        Outcome::Rejected(why) => warn!("handshake from {from} rejected: {why}"),
                         Outcome::None => {}
                     }
                 } else {
@@ -601,7 +633,7 @@ fn main() {
                                     if !others_online {
                                         BYE.store(true, Ordering::SeqCst);
                                     }
-                                    println!("receiver '{}' said goodbye", s.name);
+                                    info!("receiver '{}' said goodbye", s.name);
                                 } else if s.closed || !is_active {
                                     // A standby receiver must not retune the shared encoder; it can ask again once active.
                                 } else if let Some(reply) = s.ctl.on_message(msg) {
@@ -632,29 +664,35 @@ fn main() {
         match listener {
             Ok(listener) => {
                 let (sock, session, server, authorized_path) = (sock.try_clone().unwrap(), session.clone(), server.clone(), authorized_path.clone());
+                let pair_cmd = pair_cmd.clone();
                 std::thread::spawn(move || {
                     for conn in listener.incoming().flatten() {
                         let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
                         let mut line = String::new();
                         let mut reader = std::io::BufReader::new(&conn);
                         if reader.read_line(&mut line).is_ok() {
-                            let reply = run_command(&line, &server, &session, &sock, &authorized_path);
+                            let reply = if line.trim() == "pair" {
+                                info!("pairing window opened from the command line");
+                                pair_cmd()
+                            } else {
+                                run_command(&line, &server, &session, &sock, &authorized_path)
+                            };
                             let _ = writeln!(&conn, "{reply}");
                         }
                     }
                 });
             }
-            Err(e) => eprintln!("control socket unavailable at {}: {e}", control_path.display()),
+            Err(e) => warn!("control socket unavailable at {}: {e}", control_path.display()),
         }
     }
 
-    let want_redirect = !args.iter().any(|a| a == "--no-redirect") && arg(&args, "--source").is_none();
+    let want_redirect = !no_redirect && source.is_none();
     let redirect = Arc::new(Mutex::new(redirect::Redirect::new(redirect::Pactl, Some(cfg_dir.join("redirect.state")))));
     let redirect_on = want_redirect
         && match redirect.lock().unwrap().start() {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("redirect unavailable ({e}); capturing without it");
+                warn!("redirect unavailable ({e}); capturing without it");
                 false
             }
         };
@@ -685,7 +723,7 @@ fn main() {
             std::thread::sleep(Duration::from_millis(500));
         });
     }
-    let pinned = if redirect_on { Some(redirect::MONITOR.to_string()) } else { arg(&args, "--source") };
+    let pinned = if redirect_on { Some(redirect::MONITOR.to_string()) } else { source.clone() };
     let current: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(pinned.clone()));
     let child_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     if pinned.is_none() {
@@ -699,7 +737,7 @@ fn main() {
                 _ => act.first().cloned(),
             };
             if let Some(w) = want {
-                println!("capturing from {w}");
+                info!("capturing from {w}");
                 *cur = Some(w);
                 if let Some(pid) = *child_pid.lock().unwrap() {
                     let _ = Command::new("kill").arg(pid.to_string()).status(); // loop respawns on the new source
@@ -709,7 +747,7 @@ fn main() {
             std::thread::sleep(Duration::from_millis(500));
         });
     } else {
-        println!("capturing from {}", pinned.as_ref().unwrap());
+        info!("capturing from {}", pinned.as_ref().unwrap());
     }
 
     let mut raw = vec![0u8; frame_samples * 4];
@@ -743,7 +781,7 @@ fn main() {
                 *child_pid.lock().unwrap() = None;
                 let _ = child.wait();
                 if pinned.is_some() {
-                    eprintln!("capture stream ended");
+                    error!("capture stream ended");
                     break 'outer;
                 }
                 // Source vanished or was switched: back off so a dead sink cannot cause a respawn storm.
@@ -757,7 +795,7 @@ fn main() {
             match guard.active_session() {
                 None => {
                     if connected {
-                        println!("receiver timed out; idle");
+                        info!("receiver timed out; idle");
                         connected = false;
                     }
                 }
@@ -813,9 +851,9 @@ fn main() {
                         }
                         (cur_kbps, cur_frame_ms, cur_codec) = (want_k, want_f, want_c);
                         if want_c == CODEC_PCM {
-                            println!("receiver set lossless PCM (5 ms packets, ~1.5 Mbit/s)");
+                            info!("receiver set lossless PCM (5 ms packets, ~1.5 Mbit/s)");
                         } else {
-                            println!("receiver set {want_k} kbit/s, {want_f} ms frames");
+                            info!("receiver set {want_k} kbit/s, {want_f} ms frames");
                         }
                         Ok((want_k, want_f as u8, want_c))
                     });
@@ -826,7 +864,7 @@ fn main() {
             }
             if exhausted {
                 // The receiver reconnects on silence and gets fresh keys from a new handshake.
-                eprintln!("sequence space exhausted; dropping the session so the receiver rekeys");
+                error!("sequence space exhausted; dropping the session so the receiver rekeys");
                 if let Some(a) = guard.active {
                     guard.sessions.retain(|s| s.peer != a);
                 }
@@ -834,7 +872,7 @@ fn main() {
             }
             drop(guard);
             if last_report.elapsed() > Duration::from_secs(10) && connected {
-                println!("sent {sent} packets");
+                debug!("sent {sent} packets");
                 last_report = Instant::now();
             }
         }

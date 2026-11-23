@@ -1,0 +1,19 @@
+[Unit]
+Description=Meshwav audio agent (streams this PC's audio to a paired phone)
+Documentation=https://github.com/tech-house-blr/meshwav
+# User units cannot wait for the system tailscaled. If the tailnet is not up yet the agent exits
+# and Restart= tries again, so no ordering is needed. These only order it after the sound server
+# when that runs as a user service.
+After=pipewire-pulse.service pulseaudio.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/meshwav-agent
+# SIGTERM makes the agent hand the PC's audio output back before it exits.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
