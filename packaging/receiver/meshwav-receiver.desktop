@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Meshwav
+Comment=Play audio streamed from your computer over Tailscale
+Exec=meshwav-receiver-gui
+Icon=meshwav-receiver
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=meshwav-receiver
