@@ -40,12 +40,18 @@ object Stats {
     @Volatile var qualityNote = ""   // e.g. why lossless was dropped
     @Volatile var output = ""        // what Android actually granted for playback
     @Volatile var standby = false    // the agent sends audio to another of your receivers
+    // End-to-end delay, smoothed, from the agent's capture stamps. -1 = not measured (yet, or the agent is too old).
+    @Volatile var e2eMs = -1.0
+    @Volatile var e2eNetMs = 0.0     // capture stamp to arrival here
+    @Volatile var e2eBufMs = 0.0     // arrival to hand-over to AudioTrack (jitter buffer + decode)
+    @Volatile var e2eErrMs = -1.0    // worst-case clock error of the above
 
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
         decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0
         kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
+        e2eMs = -1.0; e2eNetMs = 0.0; e2eBufMs = 0.0; e2eErrMs = -1.0
     }
 }
 
@@ -73,7 +79,12 @@ class StreamReceiver(
         const val PAIRING_ACK_MS = 8_000L
     }
 
-    private class Live(val keys: SessionKeys) { val punchSeq = AtomicLong(0); val ctlSeq = AtomicLong(0) }
+    private class Live(val keys: SessionKeys) {
+        val punchSeq = AtomicLong(0); val ctlSeq = AtomicLong(0)
+        /** Maps the agent's capture stamps onto our clock; only the receive thread touches it. */
+        val clock = ClockSync()
+        var nextPingAt = 0L; var pings = 0
+    }
 
     private val running = AtomicBoolean(false)
     private val lock = Object()
@@ -233,6 +244,12 @@ class StreamReceiver(
                         socket?.send(DatagramPacket(d, d.size))
                         nextPunch = now + if (++n < 5) 150L else 1000L
                     }
+                    if (now >= l.nextPingAt) {
+                        val ping = ControlWire.encodePing(System.nanoTime() / 1000)
+                        val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ping)
+                        socket?.send(DatagramPacket(d, d.size))
+                        l.nextPingAt = now + if (++l.pings < 8) 250L else 1000L
+                    }
                     if (Stats.lossless && Controls.desiredCodec == ControlWire.CODEC_PCM &&
                         guard.feed(now, Stats.received, Stats.lost + Stats.late + Stats.underruns)) {
                         Controls.desiredCodec = ControlWire.CODEC_OPUS
@@ -260,6 +277,7 @@ class StreamReceiver(
         var errors = 0
         var candidateMs = 0
         var candidateCount = 0
+        var lastLive: Live? = null
         while (running.get()) {
             val why = rebindReason
             if (why != null) {
@@ -297,6 +315,7 @@ class StreamReceiver(
                 continue
             }
             val l = live ?: continue
+            if (l !== lastLive) { lastLive = l; synchronized(lock) { captured.clear() } }
             val p = Wire.open(l.keys.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, STREAM_ID, buf, pkt.length)
                 ?: Wire.open(l.keys.toReceiver, Wire.DIR_AGENT_TO_RECEIVER, CONTROL_STREAM, buf, pkt.length)
                 ?: continue
@@ -309,7 +328,12 @@ class StreamReceiver(
             }
             if (p.type == Wire.TYPE_CONTROL) {
                 ControlWire.decode(p.payload)?.let { m ->
-                    if (m is ControlWire.Msg.Active) {
+                    if (m is ControlWire.Msg.Pong) {
+                        l.clock.onPong(m.echoUs, m.agentUs, System.nanoTime() / 1000)
+                        Stats.e2eErrMs = if (l.clock.errorUs < 0) -1.0 else l.clock.errorUs / 1000.0
+                    } else if (m is ControlWire.Msg.TimeRef) {
+                        l.clock.onTimeRef(m.ts, m.agentUs)
+                    } else if (m is ControlWire.Msg.Active) {
                         if (!m.active) {
                             Stats.standby = true
                             Stats.state = "Standby: the agent is sending audio to another device"
@@ -334,6 +358,11 @@ class StreamReceiver(
                     if (candidateCount >= 3) { switchFrameSize(ms); candidateMs = 0; candidateCount = 0 }
                 } else candidateCount = 0
                 jb.push(p.seq, p.payload, now)
+                val arrivedUs = System.nanoTime() / 1000
+                l.clock.capturedAtLocalUs(p.timestamp)?.let { cap ->
+                    if (captured.size > 512) captured.clear()
+                    captured[p.seq] = longArrayOf(cap, arrivedUs)
+                }
                 lock.notifyAll()
             }
             synchronized(cfg) {
@@ -395,6 +424,9 @@ class StreamReceiver(
         Stats.jitterMs = jb.jitterMs
     }
 
+    /** Per audio packet (by seq): capture time and arrival time on our clock, in microseconds. Guarded by [lock]. */
+    private val captured = HashMap<Long, LongArray>()
+
     private fun playLoop() {
         val decoder: OpusDecoder
         val track: AudioTrack
@@ -414,10 +446,12 @@ class StreamReceiver(
             while (running.get()) {
                 var out: JitterBuffer.Out
                 var frameMs: Int
+                var stamps: LongArray? = null
                 synchronized(lock) {
                     if (frameChanged) { frameChanged = false; concealer.reset() }
                     out = jb.pop(SystemClock.elapsedRealtime())
                     frameMs = jb.frameMs
+                    if (out.kind == JitterBuffer.Kind.FRAME) stamps = captured.remove(out.seq)
                     if (out.kind == JitterBuffer.Kind.WAIT) lock.wait(3)
                     publishStats()
                 }
@@ -436,6 +470,20 @@ class StreamReceiver(
                 if (pcm.isNotEmpty()) {
                     track.write(pcm, 0, pcm.size)
                     written += pcm.size / 4
+                    stamps?.let { st ->
+                        // Time from capture to now, plus what is still queued ahead of the output (it ends with this frame).
+                        val nowUs = System.nanoTime() / 1000
+                        val net = (st[1] - st[0]) / 1000.0
+                        val buf = (nowUs - st[1]) / 1000.0
+                        val q = Stats.trackQueueMs
+                        if (q >= 0) {
+                            val total = net + buf + q
+                            val first = Stats.e2eMs < 0
+                            Stats.e2eMs = if (first) total else Stats.e2eMs + (total - Stats.e2eMs) * 0.05
+                            Stats.e2eNetMs = if (first) net else Stats.e2eNetMs + (net - Stats.e2eNetMs) * 0.05
+                            Stats.e2eBufMs = if (first) buf else Stats.e2eBufMs + (buf - Stats.e2eBufMs) * 0.05
+                        }
+                    }
                     if (++n % 20 == 0) {
                         // Frames handed over minus the position the output has reached, corrected for the age of that position.
                         if (track.getTimestamp(ts)) {

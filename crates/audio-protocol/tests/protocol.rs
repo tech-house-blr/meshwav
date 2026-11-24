@@ -197,6 +197,9 @@ fn samples() -> Vec<Message> {
         Message::ConfigRejected { req: 8, reason: 1 },
         Message::ActiveState { active: true },
         Message::ActiveState { active: false },
+        Message::TimeRef { ts: u32::MAX, t_us: u64::MAX },
+        Message::Ping { t_us: 12345 },
+        Message::Pong { echo_us: 1, t_us: 2 },
     ]
 }
 
@@ -326,6 +329,9 @@ fn runtime_config_messages_have_fixed_wire_bytes() {
     assert_eq!(hex(Message::ConfigRejected { req: 8, reason: 1 }), "00040d000801");
     assert_eq!(hex(Message::ActiveState { active: true }), "00020e01");
     assert_eq!(hex(Message::ActiveState { active: false }), "00020e00");
+    assert_eq!(hex(Message::Ping { t_us: 0x0102030405060708 }), "0009060102030405060708");
+    assert_eq!(hex(Message::Pong { echo_us: 1, t_us: 2 }), "00110700000000000000010000000000000002");
+    assert_eq!(hex(Message::TimeRef { ts: 300, t_us: 0x0102030405060708 }), "000d0f0000012c0102030405060708");
 }
 
 #[test]
