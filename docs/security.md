@@ -24,7 +24,7 @@ System audio content (may contain private material); control over the desktop's 
 
 ## Status after M4b
 Built and tested: Noise XX/XXpsk3 with pinned keys, pairing code (expiry, single use, lockout), per-session keys, bounded handshake state, 0600 key files, name sanitising.
-Not built yet: Tailscale `whois` allowlist, `revoke`/`status` commands (to remove a paired device, edit `authorized_peers` and restart the sender), Keystore wrapping of the phone's key (it sits in app-private storage, backups disabled), version/codec binding beyond the fixed `meshwav-v1` prologue, Windows DPAPI.
+Not built yet: Tailscale `whois` allowlist, a `status` command, Keystore wrapping of the phone's key (it sits in app-private storage, backups disabled), version/codec binding beyond the fixed `meshwav-v1` prologue, Windows DPAPI.
 Known limits: the phone's X25519 uses BigInteger and is not constant-time (local-attacker only). Anyone on the tailnet who can reach the agent can burn the pairing attempts and force a 60 s lockout while a window is open. A capture of a legitimate message 3 gives no offline code-guessing oracle to a passive observer; an active impostor agent is stopped by the pinned agent key in the pairing line.
 
 ## Pairing discovery
@@ -36,3 +36,5 @@ Recommendation in docs: add a Tailscale ACL limiting the agent port to the phone
 
 ## Operational
 Logs never contain audio, keys or pairing codes. `meshwav devices` shows paired devices and their state; there is no revoke command yet (see above).
+
+Removing a paired device: `meshwav remove <device>` (or Remove in the Send tab) deletes its key from `authorized_peers`, drops its live session at once and clears it as the chosen receiver. It can only return by pairing again with a new code.

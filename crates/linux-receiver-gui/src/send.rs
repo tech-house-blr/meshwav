@@ -157,6 +157,7 @@ pub struct SendPanel {
     devices: Vec<Device>,
     code: Option<OpenCode>,
     rename: Option<(String, String)>,
+    confirm_remove: Option<String>,
     last: Instant,
     message: Option<(String, bool)>,
     sock: PathBuf,
@@ -178,6 +179,7 @@ impl SendPanel {
             devices: Vec::new(),
             code: None,
             rename: None,
+            confirm_remove: None,
             last: Instant::now() - Duration::from_secs(10),
             message: None,
             sock: dir.join("control.sock"),
@@ -401,6 +403,15 @@ impl SendPanel {
                     if ui.button("Cancel").clicked() {
                         self.rename = None;
                     }
+                } else if self.confirm_remove.as_ref() == Some(&d.key) {
+                    ui.label(RichText::new(format!("Remove {}? It must pair again with a new code.", d.name)));
+                    if ui.button("Remove").clicked() {
+                        self.confirm_remove = None;
+                        action = Some(format!("remove\t{}", d.key));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_remove = None;
+                    }
                 } else {
                     ui.label(RichText::new(&d.name).strong());
                     ui.label(RichText::new(state).color(if d.state == "active" { ACCENT } else { MUTED }));
@@ -409,6 +420,9 @@ impl SendPanel {
                     }
                     if ui.small_button("Rename").clicked() {
                         start_rename = Some((d.key.clone(), d.name.clone()));
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        self.confirm_remove = Some(d.key.clone());
                     }
                 }
             });

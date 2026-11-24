@@ -90,6 +90,13 @@ impl Server {
         }
     }
 
+    /// Forget a paired device. Returns false when the key is not paired.
+    pub fn revoke(&mut self, public: &PublicKey) -> bool {
+        let before = self.authorized.len();
+        self.authorized.retain(|a| &a.public != public);
+        self.authorized.len() != before
+    }
+
     /// Open (or restart) the pairing window with a 6-digit code. Returns false for a bad code.
     pub fn open_pairing(&mut self, code: &str, now_ms: u64) -> bool {
         self.open_pairing_for(code, now_ms, PAIR_TTL_MS)

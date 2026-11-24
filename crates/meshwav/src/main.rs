@@ -12,6 +12,7 @@ usage:
   meshwav devices               list receivers paired with the running sender
   meshwav use <device|auto>     choose which receiver plays
   meshwav rename <device> <new name>
+  meshwav remove <device>
 
 `meshwav send --help` and `meshwav receive help` list each side's options.
 ";
@@ -32,7 +33,7 @@ fn main() {
         Some("receive") => meshwav_receiver::cli::run_cli("meshwav receive", rest(2)),
         // `pair` with no argument talks to the running sender; with a code it pairs this receiver.
         Some("pair") if args.len() > 2 && !args[2].starts_with("--") => meshwav_receiver::cli::run_cli("meshwav", rest(1)),
-        Some("pair" | "devices" | "use" | "rename") => meshwav_agent::run([vec!["meshwav".to_string()], rest(1)].concat()),
+        Some("pair" | "devices" | "use" | "rename" | "remove") => meshwav_agent::run([vec!["meshwav".to_string()], rest(1)].concat()),
         Some("outputs") => meshwav_receiver::cli::run_cli("meshwav", rest(1)),
         None | Some("help" | "--help" | "-h") => print!("{USAGE}"),
         Some(other) => {

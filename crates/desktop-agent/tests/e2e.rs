@@ -697,3 +697,47 @@ fn codec_setting_starts_lossless_until_a_receiver_asks_for_opus() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("must be opus or lossless"), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+#[test]
+fn a_removed_device_is_dropped_forgotten_and_cannot_reconnect() {
+    let dir = workdir("remove");
+    let port = free_port();
+    let mut agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    assert!(!seqs(&la.pump(500)).is_empty());
+    writeln!(agent.stdin, "pair").unwrap();
+    agent.stdin.flush().unwrap();
+    let (_, code2) = agent.pairing();
+    let db = dial(port, &kb, pk, Some(pairing_psk(&pk, &code2)), 2).unwrap();
+    let mut lb = Link::new(&db);
+    lb.pump(500);
+    assert!(cli(&dir, &["rename", &hex(&ka.public)[..8], "Desk PC"]).0);
+    assert!(cli(&dir, &["rename", &hex(&kb.public)[..8], "Phone B"]).0);
+
+    // unknown names change nothing
+    let (ok, text) = cli(&dir, &["remove", "nope"]);
+    assert!(!ok && text.contains("no paired device"), "{text}");
+    assert!(authorized_file(&dir).contains("Desk PC"));
+
+    // removing the active device hands the stream to the other one
+    let (ok, text) = cli(&dir, &["remove", "desk pc"]);
+    assert!(ok && text.contains("removed 'Desk PC'"), "{text}");
+    assert!(!authorized_file(&dir).contains("Desk PC") && authorized_file(&dir).contains("Phone B"));
+    la.pump(200);
+    lb.pump(300);
+    let (ea, eb) = (la.pump(800), lb.pump(1000));
+    assert!(seqs(&ea).is_empty(), "removed device gets no more audio");
+    assert!(seqs(&eb).len() > 30, "remaining device streams: {}", seqs(&eb).len());
+    let (_, text) = cli(&dir, &["devices"]);
+    assert!(!text.contains("Desk PC") && text.contains("Phone B"), "{text}");
+
+    // the removed key cannot connect again without a new code
+    // (the agent checks the key on the last handshake message, so judge by whether audio ever arrives)
+    if let Some(again) = dial(port, &ka, pk, None, 3) {
+        assert!(!again.hear_audio(2), "removed key must not be served");
+    }
+    assert!(!authorized_file(&dir).contains("Desk PC"), "a refused key must not be re-added");
+}

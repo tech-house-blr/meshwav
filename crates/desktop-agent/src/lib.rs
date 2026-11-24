@@ -329,7 +329,7 @@ fn active_sources() -> Vec<String> {
     found
 }
 
-/// Run one local control command (`devices`, `use`, `rename`) and return the reply text.
+/// Run one local control command (`devices`, `use`, `rename`, `remove`) and return the reply text.
 /// Requests are tab-separated lines: `devices`, `use\t<device|auto>`, `rename\t<device>\t<new name>`.
 fn run_command(
     line: &str,
@@ -414,7 +414,31 @@ fn run_command(
             }
             format!("renamed to '{new}'")
         }
-        _ => "error: commands are `devices`, `use <device|auto>`, `rename <device> <new name>`".to_string(),
+        ["remove", q] => {
+            let (key, name) = match find(q) {
+                Ok(i) => list[i].clone(),
+                Err(e) => return e,
+            };
+            let snapshot = {
+                let mut srv = server.lock().unwrap();
+                srv.revoke(&key);
+                srv.authorized().to_vec()
+            };
+            if let Err(e) = store::save_authorized(authorized_path, &snapshot) {
+                return format!("error: could not save paired devices: {e}");
+            }
+            let mut f = fleet.lock().unwrap();
+            f.sessions.retain(|s| s.peer != key);
+            if f.preferred == Some(key) {
+                f.preferred = None;
+                if let Err(e) = store::save_preferred(&f.preferred_path, None) {
+                    return format!("removed '{name}', but could not clear the saved choice: {e}");
+                }
+            }
+            f.update(sock);
+            format!("removed '{name}'; it must pair again with a new code to connect")
+        }
+        _ => "error: commands are `devices`, `use <device|auto>`, `rename <device> <new name>`, `remove <device>`".to_string(),
     }
 }
 
@@ -434,8 +458,9 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
         ["pair"] => "pair".to_string(),
         ["use", rest @ ..] if !rest.is_empty() => format!("use\t{}", rest.join(" ")),
         ["rename", dev, rest @ ..] if !rest.is_empty() => format!("rename\t{dev}\t{}", rest.join(" ")),
+        ["remove", rest @ ..] if !rest.is_empty() => format!("remove\t{}", rest.join(" ")),
         _ => {
-            eprintln!("usage: meshwav devices | pair | use <device|auto> | rename <device> <new name>");
+            eprintln!("usage: meshwav devices | pair | use <device|auto> | rename <device> <new name> | remove <device>");
             std::process::exit(2);
         }
     };
@@ -455,7 +480,7 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
 pub fn run(args: Vec<String>) {
     let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
     let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
-    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename" | "pair")) {
+    if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename" | "remove" | "pair")) {
         client(&args, &control_path);
     }
     let cfg = load_config(&args, &cfg_dir);
