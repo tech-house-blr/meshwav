@@ -1,5 +1,6 @@
 //! Meshwav wire protocol (v1). Pure data/crypto, no I/O. See docs/protocol.md.
 
+pub mod clocksync;
 pub mod control;
 pub mod crypto;
 pub mod error;

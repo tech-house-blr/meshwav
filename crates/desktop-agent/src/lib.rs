@@ -62,6 +62,14 @@ const CONTROL_STREAM: u32 = 2;
 const KEEPALIVE: Duration = Duration::from_secs(1);
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PORT: u16 = 47900;
+/// How often the active receiver is told which agent-clock time a frame was captured at.
+const TIMEREF_EVERY: Duration = Duration::from_millis(500);
+
+/// Agent clock for latency measurement: microseconds since the first call (monotonic, so it never jumps).
+fn clock_us() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_micros() as u64
+}
 
 /// One connected receiver. A new successful handshake from the same device replaces its session.
 struct Session {
@@ -566,6 +574,7 @@ pub fn run(args: Vec<String>) {
         }
     });
 
+    let mut last_timeref = Instant::now();
     let mut enc = OpusEncoder::new(frame_ms * 1000, kbps, false).expect("encoder");
     let mut frame_samples = if start_codec == CODEC_PCM { PCM_FRAME_BYTES / 4 } else { enc.frame_samples() };
     let (mut cur_kbps, mut cur_frame_ms, mut cur_codec) = (kbps, frame_ms, start_codec);
@@ -656,7 +665,12 @@ pub fn run(args: Vec<String>) {
                         }
                         if h.ptype == PacketType::Control {
                             if let Ok(Some((msg, _))) = Message::decode(&body) {
-                                if matches!(msg, Message::Bye { .. }) {
+                                if let Message::Ping { t_us } = msg {
+                                    // Clock-offset probe: answer at once, for active and standby receivers alike.
+                                    if !s.closed {
+                                        s.send_control(&Message::Pong { echo_us: t_us, t_us: clock_us() }, &sock);
+                                    }
+                                } else if matches!(msg, Message::Bye { .. }) {
                                     // Sealed, so only the paired device can send it. Stop sending now.
                                     s.closed = true;
                                     if let Some(t) = Instant::now().checked_sub(PEER_TIMEOUT * 2) {
@@ -821,6 +835,7 @@ pub fn run(args: Vec<String>) {
                 std::thread::sleep(Duration::from_millis(250));
                 continue 'outer;
             }
+            let t_read = clock_us();
             ts = ts.wrapping_add(frame_samples as u32);
             let mut guard = session.lock().unwrap();
             guard.update(&sock);
@@ -861,6 +876,10 @@ pub fn run(args: Vec<String>) {
                     } else {
                         let _ = sock.send_to(&out, sess.addr);
                         sent += 1;
+                        if last_timeref.elapsed() >= TIMEREF_EVERY {
+                            last_timeref = Instant::now();
+                            sess.send_control(&Message::TimeRef { ts, t_us: t_read }, &sock);
+                        }
                     }
                     // Apply a requested change after this frame, so the old encoder finishes its frame and
                     // every packet announces the frame size it was actually encoded with.

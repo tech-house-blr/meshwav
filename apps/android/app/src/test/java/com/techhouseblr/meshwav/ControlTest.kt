@@ -24,6 +24,9 @@ class ControlTest {
 
     // Same literals as the Rust test runtime_config_messages_have_fixed_wire_bytes.
     @Test fun activeStateMatchesRust() {
+        assertEquals(ControlWire.Msg.TimeRef(300, 0x0102030405060708), ControlWire.decode(hex("000d0f0000012c0102030405060708")))
+        assertEquals(ControlWire.Msg.Pong(1, 2), ControlWire.decode(hex("00110700000000000000010000000000000002")))
+        assertEquals("0009060102030405060708", ControlWire.encodePing(0x0102030405060708).hex())
         assertEquals(ControlWire.Msg.Active(true), ControlWire.decode(hex("00020e01")))
         assertEquals(ControlWire.Msg.Active(false), ControlWire.decode(hex("00020e00")))
         assertNull(ControlWire.decode(hex("00020e02")))      // not a bool

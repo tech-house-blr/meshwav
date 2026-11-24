@@ -741,3 +741,67 @@ fn a_removed_device_is_dropped_forgotten_and_cannot_reconnect() {
     }
     assert!(!authorized_file(&dir).contains("Desk PC"), "a refused key must not be re-added");
 }
+
+#[test]
+fn the_agent_answers_clock_pings_and_tells_which_time_a_frame_was_captured() {
+    use audio_protocol::clocksync::ClockSync;
+    let dir = workdir("clock");
+    let port = free_port();
+    let dev = Keypair::generate();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let d = dial(port, &dev, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut l = Link::new(&d);
+    let t0 = Instant::now();
+    let local_us = || t0.elapsed().as_micros() as u64;
+    let punch_h = Header { ptype: PacketType::Punch, stream_id: 0, seq: 0, timestamp: 0, frag_idx: 0, frag_cnt: 1, flags: 0 };
+
+    let mut clock = ClockSync::new();
+    let (mut buf, mut delays_us) = ([0u8; 2048], vec![]);
+    let (mut next_ping, mut next_punch) = (Instant::now(), Instant::now());
+    let (mut pongs, mut refs, mut audio) = (0, 0, 0);
+    let end = Instant::now() + Duration::from_millis(2500);
+    while Instant::now() < end {
+        if Instant::now() >= next_ping {
+            l.send(&Message::Ping { t_us: local_us() });
+            next_ping = Instant::now() + Duration::from_millis(250);
+        }
+        if Instant::now() >= next_punch {
+            let mut out = Vec::new();
+            l.punch.seal(punch_h, &[], &mut out).unwrap();
+            d.sock.send(&out).unwrap();
+            next_punch = Instant::now() + Duration::from_millis(500);
+        }
+        let Ok(n) = d.sock.recv(&mut buf) else { continue };
+        let now = local_us();
+        if let Ok((h, _)) = l.audio.open(&buf[..n]) {
+            if h.ptype == PacketType::Audio {
+                audio += 1;
+                // The test's fake `parec` is not real time, so frame-by-frame extrapolation is only checked loosely.
+                if let Some(cap) = clock.captured_at_local_us(h.timestamp) { assert!(now as i64 - cap > -50_000, "a frame cannot arrive before it was captured"); }
+            }
+        } else if let Ok((h, body)) = l.ctl.open(&buf[..n]) {
+            if h.ptype != PacketType::Control { continue; }
+            match Message::decode(&body).unwrap().unwrap().0 {
+                Message::Pong { echo_us, t_us } => { clock.on_pong(echo_us, t_us, now); pongs += 1; }
+                Message::TimeRef { ts, t_us } => {
+                    // Sent right after the audio packet it describes, so on loopback it must arrive within a few ms of capture.
+                    clock.on_timeref(ts, t_us);
+                    refs += 1;
+                    if let Some(cap) = clock.captured_at_local_us(ts) { delays_us.push(now as i64 - cap); }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(pongs >= 5, "pongs: {pongs}");
+    assert!(refs >= 3, "time references: {refs}");
+    assert!(audio > 100 && delays_us.len() >= 3, "{audio} audio packets, {} time references used", delays_us.len());
+    // Loopback: the agent sends the frame and then its time reference, so we see it within a few ms of the read.
+    let err = clock.error_us().unwrap() as i64;
+    let mut sorted = delays_us.clone();
+    sorted.sort();
+    let median = sorted[sorted.len() / 2];
+    assert!(err < 5_000, "clock error bound {err} us");
+    assert!(median > -(err + 500) && median < 5_000, "median capture-to-arrival {median} us (error bound {err} us)");
+}

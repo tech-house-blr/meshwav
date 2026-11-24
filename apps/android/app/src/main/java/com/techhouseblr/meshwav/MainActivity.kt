@@ -260,10 +260,18 @@ class MainActivity : Activity() {
             (if (qualityNote.isNotEmpty()) "\n$qualityNote" else "")
     }
 
+    /** Measured from the agent's capture stamps; the agent's own capture buffer before the stamp is not included. */
+    private fun e2eText(): String = with(Stats) {
+        if (e2eMs < 0) "end to end: measuring (needs a sender that supports it)\n"
+        else "end to end ${"%.0f".format(e2eMs)} ms = network ${"%.0f".format(e2eNetMs)} + buffer ${"%.0f".format(e2eBufMs)} + output ${"%.0f".format(trackQueueMs)}" +
+            (if (e2eErrMs >= 0) "  (clock +-${"%.1f".format(e2eErrMs)} ms)" else "") + "\n"
+    }
+
     private fun statsText(): String = with(Stats) {
         "$state\n${encoderText()}\nreceived $received  lost $lost  late $late  reordered $reordered  dup $duplicates\n" +
             "buffer $bufferMs ms (target $targetMs ms)  jitter ${"%.1f".format(jitterMs)} ms\n" +
             "decode ${"%.2f".format(decodeUs / 1000)} ms  output queue ${if (trackQueueMs < 0) "?" else "%.1f".format(trackQueueMs)} ms (buffer $trackBufferMs ms, underruns $trackUnderruns)\n" +
+            e2eText() +
             "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
     }
 

@@ -19,7 +19,7 @@ class JitterBuffer(
     val lossGap: Int = 2,      // this many later frames present => the missing one is declared lost
 ) {
     enum class Kind { FRAME, LOST, WAIT }
-    class Out(val kind: Kind, val payload: ByteArray? = null)
+    class Out(val kind: Kind, val payload: ByteArray? = null, val seq: Long = -1)
 
     companion object {
         /**
@@ -99,7 +99,7 @@ class JitterBuffer(
             next = n2
         }
         val f = buf.remove(next)
-        if (f != null) { next++; emptySince = 0; holeSince = 0; return Out(Kind.FRAME, f) }
+        if (f != null) { val s = next; next++; emptySince = 0; holeSince = 0; return Out(Kind.FRAME, f, s) }
         if (maxSeq > next) { // hole with later audio queued
             if (holeSince == 0L) holeSince = nowMs
             if (maxSeq - next >= lossGap || nowMs - holeSince >= 2L * frameMs) {
