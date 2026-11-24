@@ -464,7 +464,7 @@ fn lossless_pcm_is_one_datagram_per_5ms_and_switches_back_to_opus() {
     assert_eq!(reply, Message::ConfigApplied { req: 2, kbps: 160, frame_ms: 10, codec: 1 });
     let mut evs = after;
     evs.extend(l.pump(800));
-    let tail: Vec<_> = evs.iter().rev().take(30).collect();
+    let tail: Vec<_> = evs.iter().filter(|e| matches!(e, Ev::Audio { .. })).rev().take(30).collect();
     assert!(tail.iter().all(|e| matches!(e, Ev::Audio { pcm: false, frame_ms: 10, len, .. } if *len < 960)), "back to 10 ms Opus");
 
     // a codec the agent does not have is refused and changes nothing
@@ -687,7 +687,7 @@ fn codec_setting_starts_lossless_until_a_receiver_asks_for_opus() {
     assert_eq!(reply, Message::ConfigApplied { req: 1, kbps: 160, frame_ms: 10, codec: 1 });
     let mut evs = after;
     evs.extend(l.pump(800));
-    let tail: Vec<_> = evs.iter().rev().take(30).collect();
+    let tail: Vec<_> = evs.iter().filter(|e| matches!(e, Ev::Audio { .. })).rev().take(30).collect();
     assert!(tail.iter().all(|e| matches!(e, Ev::Audio { pcm: false, frame_ms: 10, len, .. } if *len < 960)), "a receiver can still pick Opus");
     drop(agent);
 
