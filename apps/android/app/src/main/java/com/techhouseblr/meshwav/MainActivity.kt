@@ -107,6 +107,12 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE); isChecked = Controls.lowLatency
             setOnCheckedChangeListener { _, on -> Controls.lowLatency = on; prefs.edit().putBoolean("low_latency", on).apply() }
         })
+        Controls.nativeOutput = prefs.getBoolean("native_output", false)
+        root.addView(android.widget.CheckBox(this).apply {
+            text = "Native audio output (AAudio, experimental; applies on next connect)"
+            setTextColor(Color.WHITE); isChecked = Controls.nativeOutput
+            setOnCheckedChangeListener { _, on -> Controls.nativeOutput = on; prefs.edit().putBoolean("native_output", on).apply() }
+        })
         Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
         Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
         root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })

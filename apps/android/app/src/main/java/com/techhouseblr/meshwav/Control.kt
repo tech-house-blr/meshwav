@@ -10,6 +10,8 @@ object Controls {
     @Volatile var desiredCodec = 1
     /** Opt-in smaller jitter-buffer floor; read when a buffer is created (connect or frame-size switch). */
     @Volatile var lowLatency = false
+    /** Play through the native AAudio path instead of AudioTrack; read when playback starts. */
+    @Volatile var nativeOutput = false
     val kbpsChoices = intArrayOf(64, 96, 128, 160, 192, 256)
     val frameChoices = intArrayOf(5, 10, 20)
 }
