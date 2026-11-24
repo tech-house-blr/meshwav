@@ -44,6 +44,22 @@ class JitterBufferTest {
         assertEquals(0, jb.underruns.toInt())
     }
 
+    @Test fun lowLatencyLowersTheFloorOnlyWhenAsked() {
+        assertEquals(4, JitterBuffer.forFrameMs(5).minFrames)
+        assertEquals(2, JitterBuffer.forFrameMs(5, lowLatency = true).minFrames)
+        assertEquals(2, JitterBuffer.forFrameMs(10).minFrames)
+        assertEquals(1, JitterBuffer.forFrameMs(10, lowLatency = true).minFrames)
+        assertEquals(40, JitterBuffer.forFrameMs(5).maxFrames)
+    }
+
+    @Test fun lowLatencyStillPlaysACleanLinkWithoutLoss() {
+        val jb = JitterBuffer.forFrameMs(10, lowLatency = true)
+        val r = run(jb, sender(500), 5030)
+        assertEquals(0, jb.lost.toInt())
+        assertEquals(500, r.frames)
+        assertEquals(0, jb.underruns.toInt())
+    }
+
     @Test fun tenPercentRandomLossIsConcealedNotStalled() {
         val rnd = Random(42)
         val dropped = BooleanArray(1000) { it in 11..994 && rnd.nextDouble() < 0.10 }

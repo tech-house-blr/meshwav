@@ -95,3 +95,20 @@ Caveats:
 - One phone, one network, single snapshots, read from screenshots. No acoustic measurement was repeated.
 - The phone's own audio path past AudioTrack cannot be split further from inside the app.
 
+## M4e: opt-in low-latency receiver mode, phone-side readouts (2026-11-24)
+
+Method as M4d: Galaxy (SM-S938B), USB audio output, sender on `liberation` over a direct tailnet path, one stats-panel snapshot per row (about +-5 ms). The "Low latency" checkbox lowers the jitter-buffer floor from 20 ms to 10 ms; the buffer still grows with measured jitter and the 200 ms cap is unchanged.
+
+| Mode | Setting | Jitter target | Output queue | Lost / late / receive underruns | AudioTrack underruns |
+|---|---|---|---|---|---|
+| PCM | off (M4d, speaker) | 40 ms | 58.9 ms | 0 / 0 / 0 | 0 |
+| PCM | on | 30 ms | 46.6 ms | 0 / 0 / 0 | 0 |
+| Opus 10 ms | off (M4d, speaker) | 40 ms | 54.0 ms | 0 / 0 / 0 | 0 |
+| Opus 10 ms | on | 20 ms | 38.7 ms | 0 / 0 / 0 | 5 |
+
+Caveats:
+- The earlier rows were on the phone speaker and these on USB audio, and the jitter target adapts, so the comparison is indicative only. The drop in output queue was not predicted; the cause was not isolated.
+- The end-to-end total was not re-measured, so no new latency figure is claimed.
+- Boss reported no audible clicks on this phone. Opus showed 5 AudioTrack underruns in the snapshot; their cause was not investigated.
+- One phone, one direct link. A weak, congested or relayed link was not tested and is expected to be worse with the smaller buffer.
+

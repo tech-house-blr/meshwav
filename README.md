@@ -136,7 +136,7 @@ If the tailnet is not up yet, the sender exits and systemd retries every 5 secon
 
 The app is in [`apps/android`](apps/android) (Kotlin, version 0.7.1). It has a Receive / Send switch and remembers the last mode.
 
-- **Receive.** Open a pairing window on the computer, then type the six-digit code on the phone and tap Pair. The app remembers every sender it has paired with: connect, make default or forget them under "Paired senders". With "Reconnect automatically" on (the default) it connects to the default sender when the app opens. A `meshwav://pair` link still works under "Use a pairing link instead".
+- **Receive.** Open a pairing window on the computer, then type the six-digit code on the phone and tap Pair. The app remembers every sender it has paired with: connect, make default or forget them under "Paired senders". With "Reconnect automatically" on (the default) it connects to the default sender when the app opens. A `meshwav://pair` link still works under "Use a pairing link instead". An opt-in "Low latency" checkbox lowers the receiver's jitter-buffer floor from 20 ms to 10 ms; it can crackle on a weak or relayed link, so it is off by default.
 - **Send.** Tap Start, allow Android's screen-capture prompt (only audio is taken), choose Lossless or Opus, then type the shown code on the computer (`meshwav pair 123456`). While sending, media volume on the phone is held at 0 and restored afterwards; some phones pause playback at 0. Lossless here is 48 kHz 16-bit audio as captured after Android's mixer, so it is not bit-perfect, and apps that block capture may be silent.
 - **Signing.** Release APKs are signed with the debug key. There is no release signing key yet, so moving to a build signed with another key will need an uninstall first.
 
