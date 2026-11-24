@@ -145,7 +145,7 @@ The app is in [`apps/android`](apps/android) (Kotlin, version 0.7.1). It has a R
 Measured numbers and their limits are in [docs/measurements.md](docs/measurements.md). In short:
 
 - **Network.** Over a direct tailnet path the round trip is about 2 to 6 ms at the median. Tail latency and loss on a Wi-Fi leg depend on the link.
-- **End to end (computer to phone).** A click-loopback test measured a median of about 91 ms for 5 ms PCM and about 115 ms for 10 ms Opus at 160 kbit/s, with 95th percentiles within 1 ms of the median. The target is a median of 60 ms or less and a 95th percentile of 80 ms or less, so **the target is not met**. These are upper bounds, and the split between the jitter buffer, the decoder and Android's audio output has not been measured.
+- **End to end (computer to phone).** A click-loopback test measured a median of about 91 ms for 5 ms PCM and about 115 ms for 10 ms Opus at 160 kbit/s, with 95th percentiles within 1 ms of the median. The target is a median of 60 ms or less and a 95th percentile of 80 ms or less, so **the target is not met**. These are upper bounds. Phone-side readouts show Opus decoding takes about 1 ms and that Android's output queue reads roughly 50 to 64 ms whatever buffer size, output route or low-latency setting we tried. Whether that is real delay or a measurement limit is not settled (see [M4d](docs/measurements.md)).
 - **Not measured.** Audio quality by ear, PipeWire-specific behaviour and battery use.
 
 ## Build from source
@@ -198,7 +198,7 @@ This includes end-to-end tests that start the real sender and receive from it, a
 
 ## Roadmap
 
-Open work, roughly in order: bring latency down to the target (starting with timing inside the receiver), Windows capture and a Windows receiver, a signed Android release, a removal command for paired devices, and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
+Open work, roughly in order: bring latency down to the target (the receiver's timing readouts are in; the Android output path is the open question), Windows capture and a Windows receiver, a signed Android release, a removal command for paired devices, and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
 
 ## Contributing
 
