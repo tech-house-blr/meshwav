@@ -29,6 +29,10 @@ object Stats {
     @Volatile var bufferMs = 0
     @Volatile var targetMs = 0
     @Volatile var jitterMs = 0.0
+    @Volatile var decodeUs = 0.0      // smoothed time to decode one frame (0 for PCM)
+    @Volatile var trackQueueMs = -1.0 // smoothed time between handing audio to AudioTrack and it reaching the output position; -1 = unknown
+    @Volatile var trackBufferMs = 0   // AudioTrack buffer capacity
+    @Volatile var trackUnderruns = 0
     @Volatile var kbps = 0          // 0 = not known yet
     @Volatile var frameMs = 0
     @Volatile var configNote = ""
@@ -40,6 +44,7 @@ object Stats {
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
+        decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0
         kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
     }
 }
@@ -365,7 +370,12 @@ class StreamReceiver(
                 else -> "output type $ty"
             }
         } catch (_: Exception) { "route unknown" }
-        return "${t.sampleRate} Hz, $enc, $dev"
+        val mode = if (android.os.Build.VERSION.SDK_INT >= 29) when (t.performanceMode) {
+            AudioTrack.PERFORMANCE_MODE_LOW_LATENCY -> "low-latency granted"
+            AudioTrack.PERFORMANCE_MODE_POWER_SAVING -> "power-saving"
+            else -> "low-latency NOT granted"
+        } else "mode unknown"
+        return "${t.sampleRate} Hz, $enc, $dev, $mode"
     }
 
     /** The agent changed its frame size: start a fresh buffer sized for it, keeping the running totals. Caller holds [lock]. */
@@ -396,7 +406,11 @@ class StreamReceiver(
             return
         }
         val concealer = Concealer()
+        val ts = android.media.AudioTimestamp()
+        var written = 0L
+        var n = 0
         try {
+            Stats.trackBufferMs = track.bufferSizeInFrames * 1000 / 48000
             while (running.get()) {
                 var out: JitterBuffer.Out
                 var frameMs: Int
@@ -408,12 +422,28 @@ class StreamReceiver(
                     publishStats()
                 }
                 val pcm = when (out.kind) {
-                    JitterBuffer.Kind.FRAME -> concealer.accept(out.payload!!.let { if (it.size == ControlWire.PCM_FRAME_BYTES) it else decoder.decode(it, frameMs * 1000L) })
+                    JitterBuffer.Kind.FRAME -> concealer.accept(out.payload!!.let {
+                        if (it.size == ControlWire.PCM_FRAME_BYTES) { Stats.decodeUs = 0.0; it } else {
+                            val t0 = System.nanoTime()
+                            val d = decoder.decode(it, frameMs * 1000L)
+                            Stats.decodeUs += ((System.nanoTime() - t0) / 1000.0 - Stats.decodeUs) * 0.05
+                            d
+                        }
+                    })
                     JitterBuffer.Kind.LOST -> concealer.conceal(48 * frameMs * 4)
                     JitterBuffer.Kind.WAIT -> continue
                 }
                 if (pcm.isNotEmpty()) {
                     track.write(pcm, 0, pcm.size)
+                    written += pcm.size / 4
+                    if (++n % 20 == 0) {
+                        // Frames handed over minus the position the output has reached, corrected for the age of that position.
+                        if (track.getTimestamp(ts)) {
+                            val q = (written - ts.framePosition) * 1000.0 / 48000 - (System.nanoTime() - ts.nanoTime) / 1e6
+                            Stats.trackQueueMs = if (Stats.trackQueueMs < 0) q else Stats.trackQueueMs + (q - Stats.trackQueueMs) * 0.1
+                        }
+                        Stats.trackUnderruns = track.underrunCount
+                    }
                     if (Stats.state != "Playing") Stats.state = "Playing"
                     if (Stats.output.isEmpty()) Stats.output = describeOutput(track)
                 }

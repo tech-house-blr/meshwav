@@ -69,3 +69,29 @@ Caveats:
 - The figure includes the microphone's USB capture latency, acoustic travel, and the phone speaker path, none of which were calibrated (no third device). The offset between the two ffmpeg inputs was not verified. Treat as an upper bound by an unknown few to a few tens of ms.
 - One session, one Wi-Fi condition, phone speaker output (not IEMs, not Bluetooth), 50 clicks per profile.
 - The very small spread (sd 0.4 ms) suggests a fixed buffering delay, not network jitter. Which stage holds the extra delay (receiver jitter buffer depth, MediaCodec Opus decode, AudioTrack buffer) is not yet known; why Opus is slower than PCM is also unexplained. Both are open hypotheses.
+
+## M4d: where the receiver's delay is, phone-side readouts (2026-11-24)
+
+Method: the Android app now reports, in its stats panel, the decode time per frame, the AudioTrack buffer, and an "output queue" (frames handed to AudioTrack minus the output position from `AudioTrack.getTimestamp()`, corrected for the age of that position). Read by eye from screenshots on the Galaxy (SM-S938B) streaming from `liberation`; each value is one smoothed snapshot (about +-5 ms).
+
+| Setting | Output queue | Decode | AudioTrack underruns |
+|---|---|---|---|
+| PCM, USB audio, 120 ms buffer | 59.8 ms | 0 | 0 |
+| Opus 10 ms, USB audio, 120 ms buffer | 51.0 ms | 1.2 ms | 0 |
+| PCM, USB audio, 40 ms buffer | 63.8 ms | 0 | 8 |
+| Opus 10 ms, USB audio, 40 ms buffer | 62.6 ms | 0.6 ms | 8 |
+| Opus 10 ms, phone speaker, 40 ms buffer | 63.3 ms | 1.2 ms | 0 |
+| Opus 10 ms, phone speaker, 120 ms buffer, low-latency mode granted | 54.0 ms | 0.5 ms | 0 |
+| PCM, phone speaker, 120 ms buffer, low-latency mode granted | 58.9 ms | 0 | 0 |
+
+Other readings: `tailscale ping` to the phone about 5 ms round trip on a direct path. Capture on `liberation` could not be read (PipeWire reports 0 for the capture stream); PipeWire's default block there is 1024 samples (about 21 ms), and `parec` asks for 10 ms.
+
+What this shows:
+- Opus decoding takes about 1 ms or less, so it does not explain Opus being about 23 ms slower than PCM in M4.
+- The output queue stayed at roughly 50 to 64 ms across a 40 ms and a 120 ms AudioTrack buffer, USB and speaker output, Opus and PCM, with the low-latency path requested and granted. Shrinking the buffer added underruns on USB and lowered nothing.
+
+Caveats:
+- A figure that does not move with any setting may be a limit of `getTimestamp()` or a fixed cost in the phone's audio path; these were not separated, so it is not shown that 55 to 60 ms of real delay sits there.
+- One phone, one network, single snapshots, read from screenshots. No acoustic measurement was repeated.
+- The phone's own audio path past AudioTrack cannot be split further from inside the app.
+

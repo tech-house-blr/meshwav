@@ -257,6 +257,7 @@ class MainActivity : Activity() {
     private fun statsText(): String = with(Stats) {
         "$state\n${encoderText()}\nreceived $received  lost $lost  late $late  reordered $reordered  dup $duplicates\n" +
             "buffer $bufferMs ms (target $targetMs ms)  jitter ${"%.1f".format(jitterMs)} ms\n" +
+            "decode ${"%.2f".format(decodeUs / 1000)} ms  output queue ${if (trackQueueMs < 0) "?" else "%.1f".format(trackQueueMs)} ms (buffer $trackBufferMs ms, underruns $trackUnderruns)\n" +
             "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
     }
 
