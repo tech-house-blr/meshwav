@@ -85,7 +85,7 @@ The wire format and handshake are specified in [docs/protocol.md](docs/protocol.
 
 Run `meshwav` with no arguments for the window. It has a Receive / Send switch; the last choice is remembered and only one side runs at a time.
 
-- **Send** starts and stops the sender service, shows the pairing code with a countdown, lists paired receivers (play here, rename, choose automatically), and edits the default quality and the keep-playing-locally setting.
+- **Send** starts and stops the sender service, shows the pairing code with a countdown, lists paired receivers (play here, rename, remove, choose automatically), and edits the default quality and the keep-playing-locally setting.
 - **Receive** has a pairing screen for the code, shows Playing, Standby or Connecting with buffer and loss numbers, a quality choice (Opus or Lossless PCM), a volume slider, and a tray icon on desktops that support StatusNotifierItem.
 
 The same things work from the command line (`man meshwav` lists everything):
@@ -98,6 +98,7 @@ meshwav devices                      # paired devices: online, active or standby
 meshwav use "Phone name"             # send the audio there (name, name prefix or key prefix)
 meshwav use auto                     # let the first connected device keep it
 meshwav rename "Phone name" "New name"
+meshwav remove "Phone name"         # forget a paired device; it must pair again
 meshwav receive run [--device SINK] [--lossless]   # play the paired sender's stream
 meshwav receive outputs              # list sound outputs
 meshwav receive forget               # forget the paired sender

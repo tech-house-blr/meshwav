@@ -11,7 +11,7 @@ meshwav \- private low-latency audio over your tailnet: send this computer's aud
 .RB { run | outputs | forget | "pair \\fICODE\\fR" }
 .br
 .B meshwav
-.RB { pair | "pair \\fICODE\\fR" | devices | use " \\fIDEVICE\\fR|auto" | rename " \\fIDEVICE NEWNAME\\fR }"
+.RB { pair | "pair \\fICODE\\fR" | devices | use " \\fIDEVICE\\fR|auto" | rename " \\fIDEVICE NEWNAME\\fR | remove " \\fIDEVICE\\fR }"
 .SH DESCRIPTION
 With no arguments it opens the window, which has a Receive / Send switch. Only one side runs at a time.
 .PP
@@ -38,6 +38,9 @@ Send the audio to one device (name, name prefix or key prefix). \fBauto\fR lets 
 .TP
 .BR rename " \\fIDEVICE NEWNAME\\fR"
 Rename a paired device.
+.TP
+.BR remove " \\fIDEVICE\\fR"
+Forget a paired device. It is disconnected at once and must pair again with a new code.
 .TP
 .B receive run [\-\-device SINK] [\-\-lossless]
 Play the paired sender's stream. \fBreceive outputs\fR lists the sound outputs.
