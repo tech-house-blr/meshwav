@@ -31,7 +31,7 @@ flowchart LR
   subgraph Android[Android receiver (Kotlin)]
     RX[UDP receive] --> JB[Jitter buffer\nadaptive + PLC]
     JB --> DEC[Decoder\nlibopus / FLAC / PCM]
-    DEC --> PLAY[AudioTrack\nlow-latency, foreground service]
+    DEC --> PLAY[AudioTrack or native AAudio\nlow-latency, foreground service]
     UI[Compose UI + diagnostics] --- CC[Control client]
   end
   TX -- UDP --> Tailnet --> RX
@@ -61,7 +61,7 @@ Android (apps/android): Kotlin + Jetpack Compose, modules `net`, `codec` (JNI li
 ## 4. Latency budget (direct path, Opus 10 ms)
 capture buffer 10 + encode 10 (frame) + network 2-10 + jitter buffer 20 + decode <1 + AudioTrack low-latency 10-20 = about 55-70 ms.
 Lossless adds no codec delay for PCM and 5-10 ms for FLAC blocks, but needs a larger jitter buffer on weak links.
-Targets (not met yet: the click-loopback test measured p50 91.5 ms for PCM and 114.9 ms for Opus to the phone, see measurements.md): p50 <= 60 ms, p95 <= 80 ms direct; <= 120 ms on DERP relay. Wired USB DAC assumed; Bluetooth output adds 100-200 ms and is outside the target (UI warns).
+Targets (AudioTrack does not reliably meet them: its output stage measured 41 to 139 ms; the native AAudio output read 27 to 36 ms end to end excluding sender capture on one phone, see measurements.md M4f and M4g; the older mic-based click test gave p50 91.5 ms PCM and 114.9 ms Opus as upper bounds): p50 <= 60 ms, p95 <= 80 ms direct; <= 120 ms on DERP relay. Wired USB DAC assumed; Bluetooth output adds 100-200 ms and is outside the target (UI warns).
 Reliability: < 1 audible glitch/hour at <= 0.5% loss; PLC concealment at up to 5% loss; reconnect within 3 s of a network blip.
 Resources: agent < 3% of one core (Opus), < 5% (lossless); Android < 5% CPU, < 50 MB RSS.
 
@@ -70,13 +70,13 @@ Desktop (Rust):
 - tokio (async net), cpal (WASAPI loopback) or wasapi crate for finer control, pipewire-rs (Linux), audiopus/opus-sys (libopus), flac encoder (libFLAC bindings or flacenc), ringbuf (lock-free SPSC), chacha20poly1305, ed25519-dalek, rustls or a Noise handshake (snow), serde+postcard not used on the wire (hand-defined layout), tracing, clap, toml.
 Android:
 - Kotlin, Compose, coroutines, AudioTrack (PERFORMANCE_MODE_LOW_LATENCY; ENCODING_PCM_FLOAT, 24/32-bit packed on API 31+), JNI libopus, FLAC decoder (libFLAC via NDK or a Kotlin port), Foreground service (mediaPlayback type), WifiLock/WakeLock, Tailscale app provides the VPN (we never use VpnService; Android allows one VPN).
-- Oboe/AAudio is a later option if AudioTrack latency measurements miss targets.
+- Native AAudio output (via the Rust `ndk` crate, shared mode, opt-in) exists because AudioTrack's output stage measured 41 to 139 ms; see measurements.md M4f and M4g. AudioTrack stays the default and the fallback.
 
 Library comparison (decisions)
 - Capture on Windows: cpal vs wasapi crate: use `wasapi` for explicit event-driven loopback and format control; cpal as fallback.
 - Linux: PipeWire native (monitor of default sink) rather than PulseAudio compat: lower latency and exact format.
 - Control security: Noise (snow) with pinned static keys beats full TLS/PKI: no CA, no certificates, small.
-- Android playback: AudioTrack first (simple, supports float/24-bit), Oboe if needed.
+- Android playback: AudioTrack by default (simple, supports float/24-bit); optional native AAudio output, added after AudioTrack's output delay proved large and erratic.
 
 ## 6. High-res lossless on Android: honest limits
 - Android's mixer resamples to the output rate (usually 48 kHz) unless the route supports a matching rate. Bit-perfect needs USB audio direct output or the Android 14+ bit-perfect mixer for USB DACs. The app reads `AudioDeviceInfo`/`AudioTrack` actual sample rate and shows "bit-perfect: yes/no/unknown" in diagnostics. We never claim bit-perfect without detecting it.

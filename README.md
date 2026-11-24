@@ -17,7 +17,7 @@
 
 Meshwav streams a device's audio to another device you own. A Linux computer or an Android phone can **send** (everything it plays), and a Linux computer or an Android phone can **receive** and play it. Devices find each other on your tailnet, pair once with a six-digit code, and from then on audio is encrypted end to end. Several receivers can be paired; exactly one plays at a time and you choose which.
 
-> **Status: early development (v0.3.0).** It works end to end on a real tailnet, but the end-to-end latency has not met its target yet (see [Performance](#performance)), Windows is not implemented, and the security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
+> **Status: early development (v0.3.0).** It works end to end on a real tailnet, but the end-to-end latency target is only met with the experimental native Android output, on the one phone tested (see [Performance](#performance)), Windows is not implemented, and the security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
 
 ## Features
 
@@ -136,7 +136,7 @@ If the tailnet is not up yet, the sender exits and systemd retries every 5 secon
 
 The app is in [`apps/android`](apps/android) (Kotlin, version 0.7.1). It has a Receive / Send switch and remembers the last mode.
 
-- **Receive.** Open a pairing window on the computer, then type the six-digit code on the phone and tap Pair. The app remembers every sender it has paired with: connect, make default or forget them under "Paired senders". With "Reconnect automatically" on (the default) it connects to the default sender when the app opens. A `meshwav://pair` link still works under "Use a pairing link instead". An opt-in "Low latency" checkbox lowers the receiver's jitter-buffer floor from 20 ms to 10 ms; it can crackle on a weak or relayed link, so it is off by default.
+- **Receive.** Open a pairing window on the computer, then type the six-digit code on the phone and tap Pair. The app remembers every sender it has paired with: connect, make default or forget them under "Paired senders". With "Reconnect automatically" on (the default) it connects to the default sender when the app opens. A `meshwav://pair` link still works under "Use a pairing link instead". An opt-in "Low latency" checkbox lowers the receiver's jitter-buffer floor from 20 ms to 10 ms; it can crackle on a weak or relayed link, so it is off by default. An opt-in, experimental "Native audio output (AAudio)" checkbox plays through the phone's native audio API instead of AudioTrack; if it cannot open, the app falls back to AudioTrack and says why. It was tested on one phone only.
 - **Send.** Tap Start, allow Android's screen-capture prompt (only audio is taken), choose Lossless or Opus, then type the shown code on the computer (`meshwav pair 123456`). While sending, media volume on the phone is held at 0 and restored afterwards; some phones pause playback at 0. Lossless here is 48 kHz 16-bit audio as captured after Android's mixer, so it is not bit-perfect, and apps that block capture may be silent.
 - **Signing.** Release APKs are signed with the debug key. There is no release signing key yet, so moving to a build signed with another key will need an uninstall first.
 
@@ -145,7 +145,7 @@ The app is in [`apps/android`](apps/android) (Kotlin, version 0.7.1). It has a R
 Measured numbers and their limits are in [docs/measurements.md](docs/measurements.md). In short:
 
 - **Network.** Over a direct tailnet path the round trip is about 2 to 6 ms at the median. Tail latency and loss on a Wi-Fi leg depend on the link.
-- **End to end (computer to phone).** A click-loopback test measured a median of about 91 ms for 5 ms PCM and about 115 ms for 10 ms Opus at 160 kbit/s, with 95th percentiles within 1 ms of the median. The target is a median of 60 ms or less and a 95th percentile of 80 ms or less, so **the target is not met**. These are upper bounds. Phone-side readouts show Opus decoding takes about 1 ms and that Android's output queue reads roughly 50 to 64 ms whatever buffer size, output route or low-latency setting we tried. Whether that is real delay or a measurement limit is not settled (see [M4d](docs/measurements.md)).
+- **End to end (computer to phone).** The phone's stats panel shows `end to end = network + buffer + output`, computed from capture stamps the sender puts on each packet, with no microphone. With the default AudioTrack output the output stage swung between 41 and 139 ms from one connect to the next, so the target is **not reliably met**. With the optional native AAudio output the output stage was about 17 ms and steady, and end to end read 27 to 36 ms on one Galaxy phone, on USB audio and the phone speaker. That figure leaves out sender capture (about 10 to 21 ms, not measured) and rests on Android's own output estimate. The target is a median of 60 ms or less. The older click-loopback test (about 91 ms for 5 ms PCM and about 115 ms for 10 ms Opus) included the microphone's own delay and is an upper bound. Details: [M4f and M4g](docs/measurements.md).
 - **Not measured.** Audio quality by ear, PipeWire-specific behaviour and battery use.
 
 ## Build from source
@@ -198,7 +198,7 @@ This includes end-to-end tests that start the real sender and receive from it, a
 
 ## Roadmap
 
-Open work, roughly in order: bring latency down to the target (the receiver's timing readouts are in; the Android output path is the open question), Windows capture and a Windows receiver, a signed Android release, a removal command for paired devices, and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
+Open work, roughly in order: confirm the native Android output on more phones and over longer runs, then make it the default; measure sender capture latency, Windows capture and a Windows receiver, a signed Android release, and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
 
 ## Contributing
 

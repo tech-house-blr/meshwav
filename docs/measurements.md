@@ -112,3 +112,45 @@ Caveats:
 - Boss reported no audible clicks on this phone. Opus showed 5 AudioTrack underruns in the snapshot; their cause was not investigated.
 - One phone, one direct link. A weak, congested or relayed link was not tested and is expected to be worse with the smaller buffer.
 
+## M4f: end-to-end readout from the sender's capture stamps (2026-11-24)
+
+Method: the sender stamps each audio packet with its capture time (a `TimeRef` control message maps the packet's sample clock to that time). The receiver estimates the clock offset with NTP-style `Ping`/`Pong` exchanges, keeps the shortest round trip, and shows `end to end = network + buffer + output` with the clock error bound. No microphone is involved. Galaxy (SM-S938B), sender on `liberation`, direct tailnet path, Opus 10 ms, low-latency mode granted, 0 packets lost, one stats-panel snapshot per connect, a few connects per row (sample sizes are small and were not tallied).
+
+| Output | Network + buffer | Output stage | End to end |
+|---|---|---|---|
+| AudioTrack, USB audio | 2 to 5 ms (two runs had 24 and 44 ms of buffer) | 41 to 73 ms, two-valued by connect | 42 to 113 ms |
+| AudioTrack, phone speaker | about 1 to 5 ms | 41 to 139 ms | 46 to 143 ms |
+
+Findings and limits:
+- Network plus jitter buffer cost about 2 to 5 ms in the normal case. The output stage is almost the whole delay and it changes from one connect to the next.
+- Capping the AudioTrack buffer (40 ms) and trimming the queue did not change the output stage, so the extra delay is inside Android's output path, not our buffer. Both experiments were reverted.
+- The figure excludes capture on the sender (PipeWire quantum, about 10 to 21 ms, not measured).
+- The output stage is Android's own timestamp estimate, not a measurement of sound at the speaker.
+- The clock error shown on the panel was 1.5 to 2.1 ms.
+- Readouts from the phone speaker and USB are from one phone; the spread was not explained.
+
+## M4g: optional native AAudio output (2026-11-24)
+
+Method: a standalone probe wrote silence to an AAudio stream and read AAudio's own timestamp; then the real player was run with the "Native audio output" checkbox on. Same phone, sender and link as M4f.
+
+Probe (silence, not a real stream; speaker and USB audio gave the same values within 0.3 ms):
+
+| Mode | Buffer held | Write-to-output delay |
+|---|---|---|
+| Exclusive, 2 bursts | 4.0 ms | 7.3 to 7.4 ms |
+| Shared, 2 bursts | 4.0 ms | 13.0 to 13.2 ms |
+| Shared, 8 bursts | 16 ms | 25.3 ms |
+
+Real stream, AAudio shared, Opus 10 ms, 8 ms buffer, 0 packets lost, 0 output underruns:
+
+| Output route | Snapshots | Output stage | Buffer stage | End to end |
+|---|---|---|---|---|
+| USB audio | 3 | 16.5 to 16.7 ms | 8 to 16 ms | 27 to 36 ms |
+| Phone speaker | 2 | 16.5 to 16.7 ms | 15 to 16 ms | 32 and 34 ms |
+
+Findings and limits:
+- The output stage is about 17 ms and steady, against 41 to 139 ms on AudioTrack.
+- With the sender's capture (about 10 to 21 ms, not measured) the total is roughly 40 to 57 ms. This rests on Android's output estimate, so it is not a confirmed acoustic figure.
+- The buffer stage is higher than on AudioTrack (8 to 16 ms against about 1 ms). The AAudio write blocks until the output has room, so that waiting is probably counted there rather than in the output queue. This reading of the code was not confirmed.
+- The "trimmed" counter rose from 14 to 18 between two speaker snapshots with no loss and 1.3 to 1.5 ms jitter. The cause was not investigated.
+- Audio was reported clean on the phone speaker and on USB audio; no crackle was reported. Not measured: other phones, Bluetooth, long runs, a weak or relayed link, and exclusive mode (the player uses shared mode).
