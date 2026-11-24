@@ -80,6 +80,7 @@ dependencies = [
  "audio-protocol",
  "audio-transport",
  "jni 0.21.1",
+ "ndk",
 ]
 
 [[package]]

@@ -1,9 +1,6 @@
 package com.techhouseblr.meshwav
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.SystemClock
@@ -30,8 +27,8 @@ object Stats {
     @Volatile var targetMs = 0
     @Volatile var jitterMs = 0.0
     @Volatile var decodeUs = 0.0      // smoothed time to decode one frame (0 for PCM)
-    @Volatile var trackQueueMs = -1.0 // smoothed time between handing audio to AudioTrack and it reaching the output position; -1 = unknown
-    @Volatile var trackBufferMs = 0   // AudioTrack buffer capacity
+    @Volatile var trackQueueMs = -1.0 // smoothed time between handing audio to the output and it reaching the output position; -1 = unknown
+    @Volatile var trackBufferMs = 0   // output buffer size
     @Volatile var trackUnderruns = 0
     @Volatile var kbps = 0          // 0 = not known yet
     @Volatile var frameMs = 0
@@ -43,7 +40,7 @@ object Stats {
     // End-to-end delay, smoothed, from the agent's capture stamps. -1 = not measured (yet, or the agent is too old).
     @Volatile var e2eMs = -1.0
     @Volatile var e2eNetMs = 0.0     // capture stamp to arrival here
-    @Volatile var e2eBufMs = 0.0     // arrival to hand-over to AudioTrack (jitter buffer + decode)
+    @Volatile var e2eBufMs = 0.0     // arrival to hand-over to the output (jitter buffer + decode)
     @Volatile var e2eErrMs = -1.0    // worst-case clock error of the above
 
     fun reset() {
@@ -56,7 +53,7 @@ object Stats {
 }
 
 /**
- * UDP receive -> adaptive jitter buffer -> Opus decode (+ concealment of lost frames) -> AudioTrack.
+ * UDP receive -> adaptive jitter buffer -> Opus decode (+ concealment of lost frames) -> audio output (AudioTrack or native AAudio).
  * Every connection starts with a Noise handshake (pairing with a code the first time, pinned
  * agent key afterwards) that yields fresh per-session keys. The socket and the session are
  * rebuilt automatically after a network change, send failures or when the agent goes quiet.
@@ -375,38 +372,6 @@ class StreamReceiver(
         }
     }
 
-    private fun newTrack(): AudioTrack {
-        val min = AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-            .setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .setBufferSizeInBytes(maxOf(min, 1920 * 4))
-            .build()
-        track.play()
-        return track
-    }
-
-    /** What Android actually opened, as reported by the AudioTrack. It cannot show whether the system mixer resamples. */
-    private fun describeOutput(t: AudioTrack): String {
-        val enc = when (t.audioFormat) { AudioFormat.ENCODING_PCM_16BIT -> "16-bit"; AudioFormat.ENCODING_PCM_FLOAT -> "float"; else -> "format ${t.audioFormat}" }
-        val dev = try {
-            when (val ty = t.routedDevice?.type) {
-                null -> "route unknown"
-                1 -> "phone earpiece"; 2 -> "phone speaker"; 3, 4 -> "wired headphones"
-                7 -> "Bluetooth call"; 8 -> "Bluetooth A2DP"; 11, 12, 22 -> "USB audio"; 26 -> "Bluetooth LE"
-                else -> "output type $ty"
-            }
-        } catch (_: Exception) { "route unknown" }
-        val mode = if (android.os.Build.VERSION.SDK_INT >= 29) when (t.performanceMode) {
-            AudioTrack.PERFORMANCE_MODE_LOW_LATENCY -> "low-latency granted"
-            AudioTrack.PERFORMANCE_MODE_POWER_SAVING -> "power-saving"
-            else -> "low-latency NOT granted"
-        } else "mode unknown"
-        return "${t.sampleRate} Hz, $enc, $dev, $mode"
-    }
-
     /** The agent changed its frame size: start a fresh buffer sized for it, keeping the running totals. Caller holds [lock]. */
     private fun switchFrameSize(ms: Int) {
         val o = jb
@@ -429,20 +394,20 @@ class StreamReceiver(
 
     private fun playLoop() {
         val decoder: OpusDecoder
-        val track: AudioTrack
+        val sink: PcmSink
+        var note = ""
         try {
             decoder = OpusDecoder()
-            track = newTrack()
+            val made = PcmSink.create(context, Controls.nativeOutput)
+            sink = made.first; note = made.second
         } catch (e: Throwable) {
             Stats.state = "Audio setup error: ${e.javaClass.simpleName}: ${e.message}"
             return
         }
         val concealer = Concealer()
-        val ts = android.media.AudioTimestamp()
-        var written = 0L
         var n = 0
         try {
-            Stats.trackBufferMs = track.bufferSizeInFrames * 1000 / 48000
+            Stats.trackBufferMs = sink.bufferMs()
             while (running.get()) {
                 var out: JitterBuffer.Out
                 var frameMs: Int
@@ -468,8 +433,7 @@ class StreamReceiver(
                     JitterBuffer.Kind.WAIT -> continue
                 }
                 if (pcm.isNotEmpty()) {
-                    track.write(pcm, 0, pcm.size)
-                    written += pcm.size / 4
+                    sink.write(pcm)
                     stamps?.let { st ->
                         // Time from capture to now, plus what is still queued ahead of the output (it ends with this frame).
                         val nowUs = System.nanoTime() / 1000
@@ -485,23 +449,20 @@ class StreamReceiver(
                         }
                     }
                     if (++n % 20 == 0) {
-                        // Frames handed over minus the position the output has reached, corrected for the age of that position.
-                        if (track.getTimestamp(ts)) {
-                            val q = (written - ts.framePosition) * 1000.0 / 48000 - (System.nanoTime() - ts.nanoTime) / 1e6
-                            Stats.trackQueueMs = if (Stats.trackQueueMs < 0) q else Stats.trackQueueMs + (q - Stats.trackQueueMs) * 0.1
-                        }
-                        Stats.trackUnderruns = track.underrunCount
+                                                val q = sink.queueMs()
+                        if (q >= 0) Stats.trackQueueMs = if (Stats.trackQueueMs < 0) q else Stats.trackQueueMs + (q - Stats.trackQueueMs) * 0.1
+                        Stats.trackUnderruns = sink.underruns()
+                        Stats.trackBufferMs = sink.bufferMs()
                     }
                     if (Stats.state != "Playing") Stats.state = "Playing"
-                    if (Stats.output.isEmpty()) Stats.output = describeOutput(track)
+                    if (Stats.output.isEmpty()) Stats.output = note + sink.describe()
                 }
             }
         } catch (_: InterruptedException) {
         } catch (e: Throwable) {
             Stats.state = "Playback error: ${e.javaClass.simpleName}: ${e.message}"
         } finally {
-            try { track.stop() } catch (_: Exception) {}
-            track.release()
+            sink.close()
             decoder.release()
         }
     }

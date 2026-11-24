@@ -164,10 +164,13 @@ fn run(sock: UdpSocket, mut server: Server, src: Arc<Source>, t0: Instant) {
 }
 
 #[cfg(target_os = "android")]
+mod aaudio_out;
+
+#[cfg(target_os = "android")]
 mod jni_api {
     use super::*;
-    use jni::objects::{JClass, JShortArray, JString};
-    use jni::sys::{jboolean, jint, jlong, jstring};
+    use jni::objects::{JByteArray, JClass, JShortArray, JString};
+    use jni::sys::{jboolean, jdouble, jint, jlong, jstring};
     use jni::JNIEnv;
 
     fn out(env: &mut JNIEnv, s: &str) -> jstring {
@@ -225,5 +228,54 @@ mod jni_api {
             s.stop();
         }
         0
+    }
+
+    static OUT: Mutex<Option<std::sync::Arc<crate::aaudio_out::Out>>> = Mutex::new(None);
+
+    fn cur_out() -> Option<std::sync::Arc<crate::aaudio_out::Out>> {
+        OUT.lock().unwrap().clone()
+    }
+
+    /// Opens the native output. Returns "ok:<sharing>:<performance>:<device id>" or "error: ...".
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_open(env: JNIEnv, _: JClass) -> jstring {
+        let r = match crate::aaudio_out::Out::open() {
+            Ok(o) => {
+                let d = format!("ok:{}", o.describe());
+                *OUT.lock().unwrap() = Some(std::sync::Arc::new(o));
+                d
+            }
+            Err(e) => format!("error: {e}"),
+        };
+        env.new_string(r).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    }
+
+    /// Queues interleaved stereo 16-bit little-endian PCM, blocking until it fits. Returns frames written or -1.
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_write(env: JNIEnv, _: JClass, pcm: JByteArray, n: jint) -> jint {
+        let Some(o) = cur_out() else { return -1 };
+        let Ok(mut v) = env.convert_byte_array(&pcm) else { return -1 };
+        v.truncate(n.max(0) as usize);
+        o.write(&v)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_queueMs(_: JNIEnv, _: JClass) -> jdouble {
+        cur_out().map(|o| o.queue_ms()).unwrap_or(-1.0)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_underruns(_: JNIEnv, _: JClass) -> jint {
+        cur_out().map(|o| o.underruns()).unwrap_or(0)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_bufferMs(_: JNIEnv, _: JClass) -> jint {
+        cur_out().map(|o| o.buffer_ms()).unwrap_or(0)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_close(_: JNIEnv, _: JClass) {
+        OUT.lock().unwrap().take();
     }
 }
