@@ -101,6 +101,12 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE); isChecked = prefs.getBoolean("auto", true)
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("auto", on).apply() }
         })
+        Controls.lowLatency = prefs.getBoolean("low_latency", false)
+        root.addView(android.widget.CheckBox(this).apply {
+            text = "Low latency (smaller buffer; may crackle on weak Wi-Fi; applies on next connect)"
+            setTextColor(Color.WHITE); isChecked = Controls.lowLatency
+            setOnCheckedChangeListener { _, on -> Controls.lowLatency = on; prefs.edit().putBoolean("low_latency", on).apply() }
+        })
         Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
         Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
         root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })

@@ -77,7 +77,7 @@ class StreamReceiver(
 
     private val running = AtomicBoolean(false)
     private val lock = Object()
-    private var jb = JitterBuffer.forFrameMs(FRAME_MS)
+    private var jb = JitterBuffer.forFrameMs(FRAME_MS, Controls.lowLatency)
     private val cfg = ConfigClient()
     private val guard = LosslessGuard()
     // Counters of jitter buffers retired by a frame-size switch, so the totals keep growing.
@@ -383,7 +383,7 @@ class StreamReceiver(
         val o = jb
         base[0] += o.received; base[1] += o.lost; base[2] += o.late; base[3] += o.duplicates
         base[4] += o.reordered; base[5] += o.trimmed; base[6] += o.underruns; base[7] += o.resyncs
-        jb = JitterBuffer.forFrameMs(ms)
+        jb = JitterBuffer.forFrameMs(ms, Controls.lowLatency)
         frameChanged = true
     }
 

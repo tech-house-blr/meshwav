@@ -22,8 +22,14 @@ class JitterBuffer(
     class Out(val kind: Kind, val payload: ByteArray? = null)
 
     companion object {
-        /** Same 20 ms floor and 200 ms hard cap for every frame size. */
-        fun forFrameMs(ms: Int) = JitterBuffer(frameMs = ms, minFrames = maxOf(2, (20 + ms - 1) / ms), maxFrames = 200 / ms)
+        /**
+         * Same 200 ms hard cap for every frame size. The floor is 20 ms, or 10 ms in low-latency mode (opt-in:
+         * it leaves less room for network jitter, so a weak link will conceal more).
+         */
+        fun forFrameMs(ms: Int, lowLatency: Boolean = false): JitterBuffer {
+            val floorMs = if (lowLatency) 10 else 20
+            return JitterBuffer(frameMs = ms, minFrames = maxOf(if (lowLatency) 1 else 2, (floorMs + ms - 1) / ms), maxFrames = 200 / ms)
+        }
 
         const val RESYNC_GAP = 1000L      // sequence jump this large means the sender restarted
         const val REBUFFER_MS = 150L      // empty this long => underrun, rebuffer
