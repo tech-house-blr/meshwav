@@ -10,6 +10,12 @@ pub trait Sink: Send {
     fn write(&mut self, pcm: &[i16]) -> io::Result<()>;
 }
 
+impl Sink for Box<dyn Sink> {
+    fn write(&mut self, pcm: &[i16]) -> io::Result<()> {
+        (**self).write(pcm)
+    }
+}
+
 impl<F: FnMut(&[i16]) -> io::Result<()> + Send> Sink for F {
     fn write(&mut self, pcm: &[i16]) -> io::Result<()> {
         self(pcm)
