@@ -1,6 +1,12 @@
 # Security Policy
 
-Meshwav is pre-release software. The pairing and handshake code (a Noise XX/XXpsk3 implementation using the `snow` crate) is custom to this project and has not been independently audited. Do not rely on it for high-stakes use yet.
+Meshwav is pre-1.0 software. The pairing and handshake code (a Noise XX/XXpsk3 implementation using the `snow` crate on the computer side, and a separate implementation on Android) is custom to this project and has not been independently audited. Do not rely on it for high-stakes use yet.
+
+An internal review of 0.4.0 found and fixed a pairing-link problem on Android and a handshake lock-out by a single tailnet device. The full list of what was checked, fixed and left open is in [docs/security.md](docs/security.md#security-review-of-040).
+
+## Supported versions
+
+Only the latest release gets fixes. Please update before reporting.
 
 ## Reporting a vulnerability
 
@@ -11,7 +17,14 @@ You can expect an acknowledgement within a few days. Fixes are made on a best-ef
 
 ## Scope
 
-In scope: the wire protocol, handshake and pairing, key storage, the agent's network binding, and the Android receiver.
+In scope: the wire protocol, handshake and pairing (including `meshwav://pair` links and discovery), key storage, the agent's network binding, the Android and Linux receivers, and the release packages.
 Out of scope: Tailscale itself, and attacks that need an already-compromised device.
+
+## What to know before using it
+
+- Meshwav only talks to Tailscale addresses. Listeners bind to the tailnet or loopback, and the receivers refuse other hosts.
+- Open a pairing link or type a pairing code only when you started pairing on the sender just now. The Android app asks you to confirm a link before using it.
+- Releases are not yet signed: the Android APK is debug-signed and the packages come without signatures. Download them only from this repository's releases page.
+- Limiting the agent port with a Tailscale ACL to your own devices is recommended.
 
 See [docs/security.md](docs/security.md) for the threat model.

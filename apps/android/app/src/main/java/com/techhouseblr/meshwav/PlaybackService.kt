@@ -52,6 +52,7 @@ class PlaybackService : Service() {
         startForeground(1, n)
         val pkHex = intent?.getStringExtra("pk") ?: saved?.agentPublic?.joinToString("") { "%02x".format(it) } ?: ""
         if (host.isEmpty() || !Regex("[0-9a-f]{64}").matches(pkHex)) { Stats.state = "Pairing error: bad agent key"; teardown(); return START_NOT_STICKY }
+        if (!Handshake.tailnetHost(host)) { Stats.state = "Refused: $host is not a Tailscale address"; teardown(); return START_NOT_STICKY }
         val agentPk = Wire.hex(pkHex)
         val code = intent?.getStringExtra("code")?.takeIf { Handshake.validCode(it) }
         val store = PairingStore(applicationContext)
