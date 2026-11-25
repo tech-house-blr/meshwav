@@ -154,3 +154,17 @@ Findings and limits:
 - The buffer stage is higher than on AudioTrack (8 to 16 ms against about 1 ms). The AAudio write blocks until the output has room, so that waiting is probably counted there rather than in the output queue. This reading of the code was not confirmed.
 - The "trimmed" counter rose from 14 to 18 between two speaker snapshots with no loss and 1.3 to 1.5 ms jitter. The cause was not investigated.
 - Audio was reported clean on the phone speaker and on USB audio; no crackle was reported. Not measured: other phones, Bluetooth, long runs, a weak or relayed link, and exclusive mode (the player uses shared mode).
+
+## M4h: the sender's capture stage (2026-11-25)
+
+Method: on the sender (`liberation`, PipeWire, quantum 1024 samples), a script wrote 40 short clicks (10 ms, 48 kHz stereo) into the `meshwav` sink with `paplay --latency-msec=10` and timed, on the same monotonic clock, when `parec -d meshwav.monitor --latency-msec=10` (the command the agent uses) read each one back in 10 ms chunks. No microphone and no network are involved.
+
+| Clicks | Detected | Minimum | Median | 90th percentile | Maximum |
+|---|---|---|---|---|---|
+| 40 | 40 | 16.1 ms | 18.1 ms | 20.1 ms | 20.1 ms |
+
+Findings and limits:
+- This is an upper bound on the capture stage: the number also contains the test player's own buffering and the 10 ms read chunk. Capture is therefore at most about 16 to 20 ms.
+- The sender's capture stamp is taken when the agent reads the audio, so this stage is not in the app's end-to-end readout. Adding it to the native AAudio readout (27 to 36 ms) gives at most about 43 to 56 ms on that one phone and link. That is under the 60 ms target, but it adds two estimates and is not a measurement of sound at the output.
+- The default AudioTrack output (42 to 143 ms end to end, M4f) does not meet the target.
+- One sender, one run of 40 clicks. A different sound server or quantum was not tried.
