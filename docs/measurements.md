@@ -178,21 +178,18 @@ Default AudioTrack output:
 | Snapshot | End to end | Output stage | Output underruns |
 |---|---|---|---|
 | Connect 1 | 54 ms | 45 ms | 0 |
-| Connect 2 | 134 ms | 103 ms | 0 |
+| Connect 2 | 134 ms | 102 ms | 0 |
 | Connect 3 | 130 ms | 100 ms | 0 |
-| Connect 4, about 60 s into it | 134 ms | 101 ms | 0 |
 
 Optional native AAudio output:
 
 | Snapshot | End to end | Output stage | Output underruns |
 |---|---|---|---|
 | Fresh connects (3) | 53, 41, 45 ms | 16.7 ms | 0 |
-| About 3 minutes into a session | 47 ms | 27 ms | 10 |
-| About 3.5 minutes into a session | 46 ms | 27 ms | 10 |
-| A session of about 60 s (one reading) | 31 ms | 25 ms | 3,721 |
+| One longer session (6,207 packets received, about 60 s of audio; one reading) | 31 ms | 25 ms | 3,721 |
 
 Findings and limits:
 - AudioTrack swings between 54 and 134 ms from one connect to the next, as on the first phone (M4f). It does not meet the 60 ms target here either.
-- Native AAudio read 41 to 53 ms on fresh connects and 46 to 47 ms after a few minutes. That excludes sender capture (at most about 16 to 20 ms, M4h), so the total may be about 57 to 73 ms. This is a sum of estimates, not a measurement, and it may miss the target on this phone. The first phone was faster with native (27 to 36 ms, output about 17 ms).
-- The one native session with 3,721 output underruns is unexplained. Two longer sessions had 10. The 3,721 reading may have been affected by the way the test was driven (screen taps by a script), and this was not separated. Whether the underruns were audible was not recorded; the owner described the native output as working fine on this phone in a short listen.
-- Native AAudio stays opt-in and experimental. Not measured: other phones, wired or Bluetooth output on the M51, long runs, a weak or relayed link.
+- Native AAudio read 41 to 53 ms end to end on fresh connects. That excludes sender capture (at most about 16 to 20 ms, M4h), so the total may be about 57 to 73 ms. This is a sum of estimates, not a measurement, and it may miss the target on this phone. Only the first seconds of each fresh connect, and the one longer session, were read. The first phone was faster with native (27 to 36 ms, output about 17 ms).
+- The native session with 3,721 output underruns is unexplained, and no other long session was read to compare. It may have been affected by the way the test was driven (screen taps by a script), and this was not separated. Whether the underruns were audible was not recorded; the owner described the native output as working fine on this phone in a short listen.
+- Native AAudio stays opt-in and experimental. Not measured: other phones, wired or Bluetooth output on the M51, repeated long runs, a weak or relayed link.
