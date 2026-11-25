@@ -38,7 +38,7 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use std::io::{BufRead, Write};
+    use std::io::{Read, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
 
     pub type Stream = TcpStream;
@@ -75,10 +75,13 @@ mod imp {
             loop {
                 let (s, _) = self.l.accept()?;
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                let mut first = String::new();
-                let mut r = io::BufReader::new(&s);
-                if r.read_line(&mut first).is_ok() && first.trim() == self.token {
-                    drop(r);
+                // Read the token a byte at a time: a buffered reader could swallow the request line behind it.
+                let mut first = Vec::new();
+                let mut b = [0u8; 1];
+                while first.len() < 128 && (&s).read(&mut b).map(|n| n == 1).unwrap_or(false) && b[0] != b'\n' {
+                    first.push(b[0]);
+                }
+                if first.strip_suffix(b"\r").unwrap_or(&first) == self.token.as_bytes() {
                     return Ok(s);
                 }
             }
