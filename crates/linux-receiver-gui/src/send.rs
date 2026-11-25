@@ -3,13 +3,16 @@
 //! one `meshwav devices | use | rename | pair` use). Audio keeps flowing when the window is closed.
 use super::{ACCENT, BAD, MUTED, WARN};
 use eframe::egui::{self, RichText};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
-pub const UNIT: &str = "meshwav-agent";
+#[cfg(unix)]
+#[path = "send_unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "send_windows.rs"]
+mod platform;
+pub use platform::{control, install_service, restart_service, service_state, start_service, stop_service, SETUP_HELP};
 const PAIR_WINDOW: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -59,65 +62,6 @@ pub fn parse_pairing(text: &str) -> Option<(String, String)> {
 /// The sender's key fingerprint from its pairing link, or an empty string if the link has no valid key.
 pub fn fingerprint_of_link(link: &str) -> String {
     meshwav_receiver::store::parse_pair_link(link).map(|l| meshwav_receiver::discover::Found { addr: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), key: l.key }.fingerprint()).unwrap_or_default()
-}
-
-/// One request to the running agent.
-pub fn control(sock: &Path, line: &str) -> Result<String, String> {
-    let mut s = UnixStream::connect(sock).map_err(|e| format!("cannot reach the sender ({e})"))?;
-    let t = Some(Duration::from_secs(2));
-    let _ = s.set_read_timeout(t);
-    let _ = s.set_write_timeout(t);
-    writeln!(s, "{line}").map_err(|e| e.to_string())?;
-    let mut out = String::new();
-    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
-    Ok(out.trim_end().to_string())
-}
-
-fn systemctl(args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}"))
-}
-
-pub fn service_state() -> ServiceState {
-    let active = systemctl(&["is-active", UNIT]).map(|o| matches!(String::from_utf8_lossy(&o.stdout).trim(), "active" | "activating")).unwrap_or(false);
-    if active {
-        ServiceState::Running
-    } else if systemctl(&["cat", UNIT]).map(|o| o.status.success()).unwrap_or(false) {
-        ServiceState::Stopped
-    } else {
-        ServiceState::NotInstalled
-    }
-}
-
-fn run_systemctl(args: &[&str]) -> Result<(), String> {
-    let o = systemctl(args)?;
-    if o.status.success() {
-        Ok(())
-    } else {
-        Err(format!("systemctl --user {} failed: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
-    }
-}
-
-pub fn start_service() -> Result<(), String> {
-    run_systemctl(&["start", UNIT])
-}
-
-pub fn stop_service() -> Result<(), String> {
-    run_systemctl(&["stop", UNIT])
-}
-
-/// The user unit for a copy of meshwav that is not installed from a package: the packaged unit with
-/// `ExecStart` pointing at this program's `send` command.
-pub fn unit_text(exe: &Path) -> String {
-    include_str!("../../../packaging/systemd/meshwav-agent.service").replace("ExecStart=/usr/bin/meshwav send", &format!("ExecStart={} send", exe.display()))
-}
-
-pub fn install_service(exe: &Path) -> Result<(), String> {
-    let home = PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
-    let dir = home.join(".config/systemd/user");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(format!("{UNIT}.service")), unit_text(exe)).map_err(|e| e.to_string())?;
-    run_systemctl(&["daemon-reload"])?;
-    run_systemctl(&["enable", "--now", UNIT])
 }
 
 /// The value of `key` in the agent's flat `key = value` settings file, if set.
@@ -294,7 +238,7 @@ impl SendPanel {
             return;
         }
         if self.is_running() {
-            let r = run_systemctl(&["restart", UNIT]);
+            let r = restart_service();
             self.act(r);
             if self.message.is_none() {
                 self.message = Some(("Settings saved; the sender restarted".into(), false));
@@ -318,7 +262,7 @@ impl SendPanel {
 
         match self.service {
             ServiceState::NotInstalled => {
-                ui.label("The sender runs as a background service so audio keeps flowing when this window is closed. Set it up for your user (a systemd user unit that runs this program).");
+                ui.label(SETUP_HELP);
                 if ui.button("Set up and start").clicked() {
                     let r = install_service(&self.exe);
                     self.act(r);
@@ -485,6 +429,8 @@ impl SendPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::io::Write;
 
     #[test]
     fn devices_reply_is_parsed() {
@@ -525,13 +471,16 @@ mod tests {
         assert_eq!(set_key("# kbps = 1\n", "kbps", Some("9")), "# kbps = 1\nkbps = 9\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn unit_points_at_this_program() {
+        use super::platform::unit_text;
         let u = unit_text(Path::new("/opt/mw/meshwav"));
         assert!(u.contains("ExecStart=/opt/mw/meshwav send\n"));
         assert!(!u.contains("ExecStart=/usr/bin/meshwav send"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn control_talks_to_a_socket() {
         let dir = std::env::temp_dir().join(format!("mw-gui-sock-{}", std::process::id()));

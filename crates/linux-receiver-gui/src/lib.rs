@@ -2,10 +2,6 @@
 //! standby, set the volume. Send: start and stop the sender service, show a pairing code, manage
 //! paired receivers. One mode runs at a time. The receiving engine is the library the command-line
 //! receiver uses.
-#[cfg(unix)]
-mod send;
-#[cfg(windows)]
-#[path = "send_windows.rs"]
 mod send;
 #[cfg(windows)]
 mod wintray;

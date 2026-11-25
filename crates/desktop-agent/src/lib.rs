@@ -771,7 +771,12 @@ pub fn run(args: Vec<String>) {
                         let mut line = String::new();
                         let mut reader = std::io::BufReader::new(&conn);
                         if reader.read_line(&mut line).is_ok() {
-                            let reply = if line.trim() == "pair" {
+                            let reply = if line.trim() == "quit" {
+                                // `meshwav-receiver-gui` on Windows has no service manager, so it stops the agent this way.
+                                info!("stop requested from the control channel");
+                                STOP.store(true, Ordering::SeqCst);
+                                "ok".to_string()
+                            } else if line.trim() == "pair" {
                                 info!("pairing window opened from the command line");
                                 pair_cmd()
                             } else {
