@@ -9,6 +9,7 @@ use std::time::Duration;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::Relaxed);
 }
@@ -83,9 +84,14 @@ pub fn run_cli(program: &str, args: Vec<String>) {
     let device = flag("--device");
     let want = flag("--fingerprint").map(|f| handshake::normalize_fingerprint(&f).unwrap_or_else(|| die("--fingerprint must be 12 hex digits like 4F2A-91C0-7B3E")));
     let cmd = args.first().cloned().unwrap_or_default();
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+    }
+    #[cfg(windows)]
+    {
+        let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::Relaxed));
     }
     let identity = || store::load_or_create_identity(&dir).unwrap_or_else(|e| die(format!("identity: {e}")));
     match cmd.as_str() {

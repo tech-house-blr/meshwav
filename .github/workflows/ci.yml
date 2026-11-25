@@ -28,3 +28,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p audio-protocol -p audio-codec -p audio-transport
+      # the agent and receiver must at least build, and their unit tests (not the Linux-audio end-to-end ones) pass
+      - run: cargo build -p meshwav-agent -p meshwav-receiver
+      - run: cargo test --lib -p meshwav-agent -p meshwav-receiver
