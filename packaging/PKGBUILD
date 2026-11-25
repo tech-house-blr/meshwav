@@ -2,7 +2,7 @@
 # Arch / AUR recipe. Builds from the tagged source. Set sha256sums to the tarball's hash for each release
 # (`updpkgsums`); SKIP is only for local testing.
 pkgname=meshwav
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Private low-latency audio over your tailnet, send and receive"
 arch=('x86_64' 'aarch64')
