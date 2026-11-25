@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! meshwav: one program for both directions. `send` is the former agent, `receive` the former receiver.
 
 const USAGE: &str = "meshwav: private low-latency audio over your tailnet
@@ -17,7 +18,35 @@ usage:
 `meshwav send --help` and `meshwav receive help` list each side's options.
 ";
 
+/// A Windows-subsystem program has no console of its own, so no window flashes up on double-click.
+/// Started from a terminal, it joins that terminal so `meshwav send` and friends still print and read.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::{
+        AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+            return; // started from Explorer or by the window: nothing to attach to
+        }
+        // A handle the parent redirected (to a file or pipe) is already valid and is kept as it is.
+        for (id, name, write) in [(STD_INPUT_HANDLE, "CONIN$", false), (STD_OUTPUT_HANDLE, "CONOUT$", true), (STD_ERROR_HANDLE, "CONOUT$", true)] {
+            let missing = GetStdHandle(id).map(|h| h.is_invalid() || h.0 == 0).unwrap_or(true);
+            if missing {
+                if let Ok(f) = std::fs::OpenOptions::new().read(!write).write(write).open(name) {
+                    let _ = SetStdHandle(id, HANDLE(f.as_raw_handle() as isize));
+                    std::mem::forget(f);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
     let args: Vec<String> = std::env::args().collect();
     // No command, or a meshwav://pair link handed over by the desktop: open the window.
     if args.len() == 1 || args.get(1).is_some_and(|a| a.starts_with("meshwav://")) {

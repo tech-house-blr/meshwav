@@ -51,8 +51,35 @@ jobs:
           name: packages-${{ matrix.arch }}
           path: dist/*
 
+  # One portable meshwav.exe: the window, the sender and the receiver in a single file.
+  windows:
+    runs-on: windows-latest
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p meshwav
+      - name: Smoke test and name the file
+        shell: bash
+        run: |
+          set -e
+          exe=target/release/meshwav.exe
+          # a Windows-subsystem program only prints when started from a terminal, so go through cmd
+          cmd //c "$exe --help" | head -3
+          cmd //c "$exe receive outputs" | head -3
+          name="meshwav-${GITHUB_REF_NAME//\//-}-windows-x86_64.exe"
+          mkdir dist && cp "$exe" "dist/$name"
+          (cd dist && sha256sum "$name" > "$name.sha256")
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows
+          path: dist/*
+
   publish:
-    needs: build
+    needs: [build, windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

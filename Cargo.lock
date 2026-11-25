@@ -2343,6 +2343,8 @@ dependencies = [
  "meshwav-agent",
  "meshwav-receiver",
  "meshwav-receiver-gui",
+ "windows 0.54.0",
+ "winresource",
 ]
 
 [[package]]
