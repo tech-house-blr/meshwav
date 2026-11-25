@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 /// used `~/.config/meshwav-receiver` (or the same under `$XDG_CONFIG_HOME`); that folder is moved
 /// across the first time, so an existing pairing and identity key carry over.
 pub fn default_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        // Windows: `%APPDATA%\meshwav\receiver`; there is no older layout to migrate.
+        return PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("meshwav").join("receiver");
+    }
+    #[cfg(not(windows))]
+    default_dir_unix()
+}
+
+#[cfg(not(windows))]
+fn default_dir_unix() -> PathBuf {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let dir = home.join(".config/meshwav/receiver");
     let mut old = vec![home.join(".config/meshwav-receiver")];

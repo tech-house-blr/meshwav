@@ -16,6 +16,7 @@
 #[macro_use]
 mod log;
 mod config;
+mod control;
 mod fleet;
 mod invite;
 mod redirect;
@@ -30,7 +31,6 @@ use audio_protocol::server::{Outcome, Server};
 use audio_transport::is_tailnet_or_loopback;
 use std::io::{BufRead, Read};
 use std::net::{SocketAddr, UdpSocket};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -41,8 +41,35 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// Set when the receiver says goodbye, so the redirect is undone right away instead of after the grace period.
 static BYE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
+}
+
+/// Where the sender keeps its settings, keys and control file: `~/.config/meshwav`, or
+/// `%APPDATA%\meshwav` on Windows.
+fn config_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA")).join("meshwav")
+    }
+    #[cfg(not(windows))]
+    {
+        std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav")
+    }
+}
+
+/// Make Ctrl-C (and SIGTERM on Unix) set STOP so the agent shuts down cleanly.
+fn install_stop_handlers() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, on_signal as *const () as usize);
+        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
+    }
+    #[cfg(windows)]
+    {
+        let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst));
+    }
 }
 
 /// Restores the audio output when main unwinds or returns (not on `process::exit`).
@@ -473,7 +500,7 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
             std::process::exit(2);
         }
     };
-    let mut c = UnixStream::connect(sock_path).unwrap_or_else(|e| {
+    let mut c = control::connect(sock_path).unwrap_or_else(|e| {
         eprintln!("cannot reach the running agent at {} ({e}); is it started?", sock_path.display());
         std::process::exit(1);
     });
@@ -487,7 +514,7 @@ fn client(args: &[String], sock_path: &std::path::Path) -> ! {
 
 /// Entry point shared by `meshwav send` and the `meshwav-agent` compatibility command. `args[0]` is the program name.
 pub fn run(args: Vec<String>) {
-    let cfg_dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config/meshwav");
+    let cfg_dir = config_dir();
     let control_path = arg(&args, "--control").map(std::path::PathBuf::from).unwrap_or_else(|| cfg_dir.join("control.sock"));
     if matches!(args.get(1).map(String::as_str), Some("devices" | "use" | "rename" | "remove" | "pair")) {
         client(&args, &control_path);
@@ -705,16 +732,12 @@ pub fn run(args: Vec<String>) {
 
     // Local control socket (owner-only): `meshwav devices | use | rename` talk to it.
     {
-        let _ = std::fs::remove_file(&control_path); // a stale socket from a crashed run; the UDP bind above already proved we are the only agent
-        let old_umask = unsafe { libc::umask(0o177) };
-        let listener = UnixListener::bind(&control_path);
-        unsafe { libc::umask(old_umask) };
-        match listener {
+        match control::bind(&control_path) {
             Ok(listener) => {
                 let (sock, session, server, authorized_path) = (sock.try_clone().unwrap(), session.clone(), server.clone(), authorized_path.clone());
                 let pair_cmd = pair_cmd.clone();
                 std::thread::spawn(move || {
-                    for conn in listener.incoming().flatten() {
+                    while let Ok(conn) = listener.accept() {
                         let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
                         let mut line = String::new();
                         let mut reader = std::io::BufReader::new(&conn);
@@ -745,10 +768,7 @@ pub fn run(args: Vec<String>) {
             }
         };
     let _guard = redirect_on.then(|| RedirectGuard(redirect.clone()));
-    unsafe {
-        libc::signal(libc::SIGINT, on_signal as *const () as usize);
-        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
-    }
+    install_stop_handlers();
     // Ctrl-C and SIGTERM must stop the agent with or without the redirect (the handler only sets a flag).
     {
         let (redirect, session) = (redirect.clone(), session.clone());
