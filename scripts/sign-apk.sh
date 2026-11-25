@@ -20,6 +20,13 @@ KS=${MESHWAV_KEYSTORE:-$HOME/Tech_House_Sync/Assets/meshwav-signing/meshwav-rele
 ALIAS=${MESHWAV_KEY_ALIAS:-meshwav}
 LINEAGE=${MESHWAV_LINEAGE:-$(dirname "$KS")/lineage.bin}
 SDK=${ANDROID_HOME:-$HOME/Projects/meshwav-toolchain/android-sdk}
+# apksigner is a Java program; use the toolchain's JDK when none is on the PATH.
+if ! command -v java >/dev/null 2>&1; then
+  JDK=${JAVA_HOME:-$HOME/Projects/meshwav-toolchain/jdk}
+  [ -x "$JDK/bin/java" ] || { echo "java not found (set JAVA_HOME)" >&2; exit 2; }
+  PATH=$JDK/bin:$PATH
+  export PATH
+fi
 BT=$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
 BT=${BT%/}
 [ -x "$BT/apksigner" ] || { echo "apksigner not found under $SDK/build-tools (set ANDROID_HOME)" >&2; exit 2; }
