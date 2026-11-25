@@ -16,10 +16,19 @@
 #[macro_use]
 mod log;
 mod config;
+#[cfg(windows)]
+mod capture_windows;
 mod control;
 mod fleet;
 mod invite;
 mod redirect;
+#[cfg(windows)]
+mod duck_windows;
+
+#[cfg(not(windows))]
+type Redirector = redirect::Redirect<redirect::Pactl>;
+#[cfg(windows)]
+type Redirector = duck_windows::Duck;
 mod store;
 
 use audio_codec::opus::OpusEncoder;
@@ -73,7 +82,7 @@ fn install_stop_handlers() {
 }
 
 /// Restores the audio output when main unwinds or returns (not on `process::exit`).
-struct RedirectGuard(Arc<Mutex<redirect::Redirect<redirect::Pactl>>>);
+struct RedirectGuard(Arc<Mutex<Redirector>>);
 
 impl Drop for RedirectGuard {
     fn drop(&mut self) {
@@ -307,8 +316,32 @@ fn load_config(args: &[String], cfg_dir: &std::path::Path) -> config::Config {
     }
 }
 
+/// Start reading 48 kHz stereo s16le from `source`: a `parec` child on Linux, WASAPI loopback on Windows.
+#[cfg(not(windows))]
+fn open_capture(source: &str) -> (Box<dyn Read + Send>, Option<std::process::Child>) {
+    let mut child = Command::new("parec")
+        .args(["-d", source, "--format=s16le", "--rate=48000", "--channels=2", "--raw", "--latency-msec=10"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to start parec (is PulseAudio/PipeWire-pulse installed?)");
+    let stdout = child.stdout.take().unwrap();
+    (Box::new(stdout), Some(child))
+}
+
+#[cfg(windows)]
+fn open_capture(_source: &str) -> (Box<dyn Read + Send>, Option<std::process::Child>) {
+    match capture_windows::Loopback::start() {
+        Ok(l) => (Box::new(l), None),
+        Err(e) => fatal(&format!("cannot capture the system audio: {e}")),
+    }
+}
+
 fn tailscale_ip() -> Option<String> {
-    let out = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    let mut c = Command::new("tailscale");
+    c.args(["ip", "-4"]);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // no console window flashing up
+    let out = c.output().ok()?;
     String::from_utf8(out.stdout)
         .ok()?
         .lines()
@@ -742,7 +775,12 @@ pub fn run(args: Vec<String>) {
                         let mut line = String::new();
                         let mut reader = std::io::BufReader::new(&conn);
                         if reader.read_line(&mut line).is_ok() {
-                            let reply = if line.trim() == "pair" {
+                            let reply = if line.trim() == "quit" {
+                                // `meshwav-receiver-gui` on Windows has no service manager, so it stops the agent this way.
+                                info!("stop requested from the control channel");
+                                STOP.store(true, Ordering::SeqCst);
+                                "ok".to_string()
+                            } else if line.trim() == "pair" {
                                 info!("pairing window opened from the command line");
                                 pair_cmd()
                             } else {
@@ -758,7 +796,11 @@ pub fn run(args: Vec<String>) {
     }
 
     let want_redirect = !no_redirect && source.is_none();
+    #[cfg(not(windows))]
     let redirect = Arc::new(Mutex::new(redirect::Redirect::new(redirect::Pactl, Some(cfg_dir.join("redirect.state")))));
+    // Windows has no virtual sink to move apps onto; the output is turned down to 0 instead.
+    #[cfg(windows)]
+    let redirect = Arc::new(Mutex::new(duck_windows::Duck::new(cfg_dir.join("redirect.state"))));
     let redirect_on = want_redirect
         && match redirect.lock().unwrap().start() {
             Ok(()) => true,
@@ -791,7 +833,7 @@ pub fn run(args: Vec<String>) {
             std::thread::sleep(Duration::from_millis(500));
         });
     }
-    let pinned = if redirect_on { Some(redirect::MONITOR.to_string()) } else { source.clone() };
+    let pinned = if cfg!(windows) { Some("default output (loopback)".to_string()) } else if redirect_on { Some(redirect::MONITOR.to_string()) } else { source.clone() };
     let current: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(pinned.clone()));
     let child_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     if pinned.is_none() {
@@ -829,25 +871,14 @@ pub fn run(args: Vec<String>) {
             }
             std::thread::sleep(Duration::from_millis(200));
         };
-        let mut child = Command::new("parec")
-            .args([
-                "-d",
-                source.as_str(),
-                "--format=s16le",
-                "--rate=48000",
-                "--channels=2",
-                "--raw",
-                "--latency-msec=10",
-            ])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to start parec (is PulseAudio/PipeWire-pulse installed?)");
-        *child_pid.lock().unwrap() = Some(child.id());
-        let mut stdout = child.stdout.take().unwrap();
+        let (mut stdout, mut child) = open_capture(&source);
+        *child_pid.lock().unwrap() = child.as_ref().map(|c| c.id());
         loop {
             if stdout.read_exact(&mut raw).is_err() {
                 *child_pid.lock().unwrap() = None;
-                let _ = child.wait();
+                if let Some(c) = child.as_mut() {
+                    let _ = c.wait();
+                }
                 if pinned.is_some() {
                     error!("capture stream ended");
                     break 'outer;

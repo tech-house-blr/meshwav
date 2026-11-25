@@ -13,7 +13,13 @@ pub fn parse_peers(status: &str) -> Vec<IpAddr> {
 
 /// Online tailnet peers according to the local `tailscale` command (empty if it is missing or fails).
 pub fn tailnet_peers() -> Vec<IpAddr> {
-    match std::process::Command::new("tailscale").arg("status").output() {
+    match {
+        let mut c = std::process::Command::new("tailscale");
+        c.arg("status");
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // no console window flashing up
+        c.output()
+    } {
         Ok(o) => parse_peers(&String::from_utf8_lossy(&o.stdout)),
         Err(_) => vec![],
     }
