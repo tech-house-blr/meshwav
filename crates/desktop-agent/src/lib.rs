@@ -16,6 +16,8 @@
 #[macro_use]
 mod log;
 mod config;
+#[cfg(windows)]
+mod capture_windows;
 mod control;
 mod fleet;
 mod invite;
@@ -304,6 +306,26 @@ fn load_config(args: &[String], cfg_dir: &std::path::Path) -> config::Config {
         Ok(text) => config::Config::parse(&text).unwrap_or_else(|e| fatal(&format!("{}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => config::Config::default(),
         Err(e) => fatal(&format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Start reading 48 kHz stereo s16le from `source`: a `parec` child on Linux, WASAPI loopback on Windows.
+#[cfg(not(windows))]
+fn open_capture(source: &str) -> (Box<dyn Read + Send>, Option<std::process::Child>) {
+    let mut child = Command::new("parec")
+        .args(["-d", source, "--format=s16le", "--rate=48000", "--channels=2", "--raw", "--latency-msec=10"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to start parec (is PulseAudio/PipeWire-pulse installed?)");
+    let stdout = child.stdout.take().unwrap();
+    (Box::new(stdout), Some(child))
+}
+
+#[cfg(windows)]
+fn open_capture(_source: &str) -> (Box<dyn Read + Send>, Option<std::process::Child>) {
+    match capture_windows::Loopback::start() {
+        Ok(l) => (Box::new(l), None),
+        Err(e) => fatal(&format!("cannot capture the system audio: {e}")),
     }
 }
 
@@ -757,7 +779,8 @@ pub fn run(args: Vec<String>) {
         }
     }
 
-    let want_redirect = !no_redirect && source.is_none();
+    // Redirecting every app's audio needs PulseAudio's sink machinery; on Windows the agent only captures what the default output plays.
+    let want_redirect = !no_redirect && source.is_none() && cfg!(not(windows));
     let redirect = Arc::new(Mutex::new(redirect::Redirect::new(redirect::Pactl, Some(cfg_dir.join("redirect.state")))));
     let redirect_on = want_redirect
         && match redirect.lock().unwrap().start() {
@@ -791,7 +814,7 @@ pub fn run(args: Vec<String>) {
             std::thread::sleep(Duration::from_millis(500));
         });
     }
-    let pinned = if redirect_on { Some(redirect::MONITOR.to_string()) } else { source.clone() };
+    let pinned = if cfg!(windows) { Some("default output (loopback)".to_string()) } else if redirect_on { Some(redirect::MONITOR.to_string()) } else { source.clone() };
     let current: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(pinned.clone()));
     let child_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     if pinned.is_none() {
@@ -829,25 +852,14 @@ pub fn run(args: Vec<String>) {
             }
             std::thread::sleep(Duration::from_millis(200));
         };
-        let mut child = Command::new("parec")
-            .args([
-                "-d",
-                source.as_str(),
-                "--format=s16le",
-                "--rate=48000",
-                "--channels=2",
-                "--raw",
-                "--latency-msec=10",
-            ])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to start parec (is PulseAudio/PipeWire-pulse installed?)");
-        *child_pid.lock().unwrap() = Some(child.id());
-        let mut stdout = child.stdout.take().unwrap();
+        let (mut stdout, mut child) = open_capture(&source);
+        *child_pid.lock().unwrap() = child.as_ref().map(|c| c.id());
         loop {
             if stdout.read_exact(&mut raw).is_err() {
                 *child_pid.lock().unwrap() = None;
-                let _ = child.wait();
+                if let Some(c) = child.as_mut() {
+                    let _ = c.wait();
+                }
                 if pinned.is_some() {
                     error!("capture stream ended");
                     break 'outer;
