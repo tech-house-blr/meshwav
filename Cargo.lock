@@ -2356,6 +2356,7 @@ dependencies = [
  "ctrlc",
  "getrandom 0.2.17",
  "libc",
+ "windows 0.54.0",
 ]
 
 [[package]]

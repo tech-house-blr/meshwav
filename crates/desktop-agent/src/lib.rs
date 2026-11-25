@@ -22,6 +22,13 @@ mod control;
 mod fleet;
 mod invite;
 mod redirect;
+#[cfg(windows)]
+mod duck_windows;
+
+#[cfg(not(windows))]
+type Redirector = redirect::Redirect<redirect::Pactl>;
+#[cfg(windows)]
+type Redirector = duck_windows::Duck;
 mod store;
 
 use audio_codec::opus::OpusEncoder;
@@ -75,7 +82,7 @@ fn install_stop_handlers() {
 }
 
 /// Restores the audio output when main unwinds or returns (not on `process::exit`).
-struct RedirectGuard(Arc<Mutex<redirect::Redirect<redirect::Pactl>>>);
+struct RedirectGuard(Arc<Mutex<Redirector>>);
 
 impl Drop for RedirectGuard {
     fn drop(&mut self) {
@@ -779,9 +786,12 @@ pub fn run(args: Vec<String>) {
         }
     }
 
-    // Redirecting every app's audio needs PulseAudio's sink machinery; on Windows the agent only captures what the default output plays.
-    let want_redirect = !no_redirect && source.is_none() && cfg!(not(windows));
+    let want_redirect = !no_redirect && source.is_none();
+    #[cfg(not(windows))]
     let redirect = Arc::new(Mutex::new(redirect::Redirect::new(redirect::Pactl, Some(cfg_dir.join("redirect.state")))));
+    // Windows has no virtual sink to move apps onto; the output is turned down to 0 instead.
+    #[cfg(windows)]
+    let redirect = Arc::new(Mutex::new(duck_windows::Duck::new(cfg_dir.join("redirect.state"))));
     let redirect_on = want_redirect
         && match redirect.lock().unwrap().start() {
             Ok(()) => true,
