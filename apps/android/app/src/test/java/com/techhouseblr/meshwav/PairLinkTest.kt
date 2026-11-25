@@ -19,4 +19,13 @@ class PairLinkTest {
             "http://100.64.0.1", "100.64.0.1:47900", "100.64.0.1/x",
         )) assertFalse(h, Handshake.tailnetHost(h))
     }
+
+    /** Same vector as `fingerprint_is_stable_short_and_forgiving_to_type` in the Rust tests. */
+    @Test fun fingerprintMatchesTheRustImplementation() {
+        assertEquals("DBA9-8DD2-C3ED", Handshake.fingerprint(ByteArray(32) { 7 }))
+        assertEquals("DBA9-8DD2-C3ED", Handshake.fingerprintOfHex("07".repeat(32)))
+        assertNotEquals(Handshake.fingerprint(ByteArray(32) { 7 }), Handshake.fingerprint(ByteArray(32) { 8 }))
+        assertNull(Handshake.fingerprintOfHex("07".repeat(31)))
+        assertNull(Handshake.fingerprintOfHex("zz".repeat(32)))
+    }
 }

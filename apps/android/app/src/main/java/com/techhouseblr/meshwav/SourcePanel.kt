@@ -42,6 +42,7 @@ class SourcePanel(private val a: Activity) {
     private lateinit var linkBox: LinearLayout
     private lateinit var link: TextView
     private lateinit var code: TextView
+    private lateinit var fingerprint: TextView
     private lateinit var readout: TextView
     private lateinit var losslessBtn: Button
     private lateinit var opusBtn: Button
@@ -91,6 +92,8 @@ class SourcePanel(private val a: Activity) {
         linkBox.addView(label("Pairing code, valid for 10 minutes, one use"))
         code = label("", 30f, TEAL, true).apply { typeface = Typeface.MONOSPACE; setPadding(0, px(2), 0, px(8)) }
         linkBox.addView(code)
+        fingerprint = label("", 14f, TEAL).apply { typeface = Typeface.MONOSPACE; setPadding(0, 0, 0, px(8)) }
+        linkBox.addView(fingerprint)
         link = label("", 12f, TEXT).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
         linkBox.addView(link)
         val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, px(12), 0, 0) }
@@ -98,7 +101,7 @@ class SourcePanel(private val a: Activity) {
         row.addView(flat("Share link", BG, TEXT) { share() }, LinearLayout.LayoutParams(0, px(44), 1f).apply { leftMargin = px(8) })
         linkBox.addView(row)
         addView(linkBox, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(16) })
-        addView(label("On the receiver, type the code into its pairing field.", 12f).apply { setPadding(0, px(6), 0, 0) }.also { it.tag = "hint" })
+        addView(label("On the receiver, type the code into its pairing field, then confirm the key fingerprint shown above.", 12f).apply { setPadding(0, px(6), 0, 0) }.also { it.tag = "hint" })
 
         readout = label("", 13f).apply { typeface = Typeface.MONOSPACE; setPadding(0, px(16), 0, 0) }
         addView(readout)
@@ -162,6 +165,7 @@ class SourcePanel(private val a: Activity) {
                 val l = SpikeService.link
                 link.text = l
                 code.text = l.substringAfter("code=", "").chunked(3).joinToString(" ")
+                fingerprint.text = Handshake.fingerprintOfHex(l.substringAfter("pk=", "").substringBefore("&"))?.let { "Key fingerprint $it" } ?: ""
                 val s = st.substringBefore(" |").split(" ")
                 val sent = s.getOrNull(1) ?: "0"; val dropped = s.getOrNull(3) ?: "0"
                 readout.text = "sent $sent   dropped $dropped   level ${SpikeService.peak * 100 / 32768}%"

@@ -24,7 +24,7 @@ Meshwav streams a device's audio to another device you own. A Linux computer or 
 - **Send from Linux or Android, receive on Linux or Android.** One `meshwav` program (window and command line) on Linux, one app on Android with a Receive / Send switch.
 - **Opus or lossless PCM.** Opus at 64 to 256 kbit/s with 5, 10 or 20 ms frames, or raw 48 kHz 16-bit PCM (about 1.7 Mbit/s) for a clean copy of what the sender plays. The receiver can switch live.
 - **Private by construction.** Noise XX / XXpsk3 handshake, pinned device keys, per-session keys, ChaCha20-Poly1305 packets with a replay window. Everything listens and connects on Tailscale (or loopback) addresses only.
-- **Pair with just a code.** The sender shows a six-digit code and the other device finds it on your tailnet by itself; there is no address or key to type.
+- **Pair with just a code.** The sender shows a six-digit code and a key fingerprint, and the other device finds it on your tailnet by itself. There is no address or key to type; you only confirm that the fingerprint it shows matches the sender's.
 - **Choose where it plays.** Pair several receivers and pick the active one from the window or with `meshwav use`. The others stay connected on standby and never steal the stream.
 - **Resilient playback.** Adaptive jitter buffer, loss concealment and automatic reconnect.
 - **Runs as a service.** The Linux sender runs as a systemd user service and keeps sending when the window is closed.
@@ -56,9 +56,9 @@ systemctl --user enable --now meshwav-agent    # start the sender
 meshwav pair                                   # open a 2-minute pairing window, prints a 6-digit code
 ```
 
-**3. Receive on the phone.** Open the app, choose **Receive**, type the code and tap **Pair**. Audio from the computer now plays on the phone.
+**3. Receive on the phone.** Open the app, choose **Receive**, type the code and tap **Pair**. The phone shows the key fingerprint of the sender it found; check that it matches the one the computer shows next to the code and tap **Yes**. Audio from the computer now plays on the phone.
 
-To receive on another Linux computer instead, run `meshwav pair 123456` there with the code the sender shows, then `meshwav receive run` (or choose Receive in the window).
+To receive on another Linux computer instead, run `meshwav pair 123456` there with the code the sender shows (it asks you to confirm the sender's fingerprint, or pass `--fingerprint 4F2A-91C0-7B3E`), then `meshwav receive run` (or choose Receive in the window).
 
 ## How it works
 
@@ -93,7 +93,7 @@ The same things work from the command line (`man meshwav` lists everything):
 ```sh
 meshwav send [--codec opus|lossless] [--kbps 160] [--frame-ms 10]   # the sender (normally run by the service)
 meshwav pair                         # open a pairing window on the running sender
-meshwav pair 123456                  # pair this computer as a receiver with a sender's code
+meshwav pair 123456                  # pair this computer as a receiver with a sender's code (asks to confirm the fingerprint)
 meshwav devices                      # paired devices: online, active or standby
 meshwav use "Phone name"             # send the audio there (name, name prefix or key prefix)
 meshwav use auto                     # let the first connected device keep it

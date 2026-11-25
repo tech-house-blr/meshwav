@@ -67,6 +67,29 @@ pub fn pairing_psk(agent_public: &PublicKey, code: &str) -> [u8; 32] {
 }
 
 /// True for exactly six ASCII digits.
+/// Short form of a sender's public key for people to compare, like `4F2A-91C0-7B3E` (48 bits, upper
+/// case). A sender shows it with its pairing code; a receiver that found the sender by code alone
+/// shows what it found, and the person confirms they match before anything is sent. Without that
+/// check, any tailnet device could answer as the sender and recover the code offline (docs/security.md).
+pub fn fingerprint(key: &PublicKey) -> String {
+    let mut h = Sha256::new();
+    h.update(b"meshwav-fp-v1");
+    h.update(key);
+    let d = h.finalize();
+    let s = hex(&d[..6]).to_uppercase();
+    format!("{}-{}-{}", &s[0..4], &s[4..8], &s[8..12])
+}
+
+/// A typed or pasted fingerprint in canonical form (`4F2A-91C0-7B3E`), or `None` if it is not 12 hex digits.
+/// Dashes, spaces and case are ignored.
+pub fn normalize_fingerprint(s: &str) -> Option<String> {
+    let t: String = s.chars().filter(|c| !matches!(c, '-' | ' ' | ':')).collect::<String>().to_uppercase();
+    if t.len() != 12 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("{}-{}-{}", &t[0..4], &t[4..8], &t[8..12]))
+}
+
 pub fn valid_code(code: &str) -> bool {
     code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit())
 }

@@ -56,6 +56,11 @@ pub fn parse_pairing(text: &str) -> Option<(String, String)> {
     Some((code, link))
 }
 
+/// The sender's key fingerprint from its pairing link, or an empty string if the link has no valid key.
+pub fn fingerprint_of_link(link: &str) -> String {
+    meshwav_receiver::store::parse_pair_link(link).map(|l| meshwav_receiver::discover::Found { addr: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), key: l.key }.fingerprint()).unwrap_or_default()
+}
+
 /// One request to the running agent.
 pub fn control(sock: &Path, line: &str) -> Result<String, String> {
     let mut s = UnixStream::connect(sock).map_err(|e| format!("cannot reach the sender ({e})"))?;
@@ -148,6 +153,8 @@ pub fn set_key(text: &str, key: &str, val: Option<&str>) -> String {
 struct OpenCode {
     code: String,
     link: String,
+    /// The sender's key fingerprint (from the link), shown so receivers can be confirmed against it.
+    fingerprint: String,
     until: Instant,
     devices_before: usize,
 }
@@ -255,7 +262,7 @@ impl SendPanel {
     fn open_pairing(&mut self) {
         match control(&self.sock, "pair").map(|t| parse_pairing(&t).ok_or(t)) {
             Ok(Ok((code, link))) => {
-                self.code = Some(OpenCode { code, link, until: Instant::now() + PAIR_WINDOW, devices_before: self.devices.len() });
+                self.code = Some(OpenCode { fingerprint: fingerprint_of_link(&link), code, link, until: Instant::now() + PAIR_WINDOW, devices_before: self.devices.len() });
                 self.message = None;
             }
             Ok(Err(other)) => self.message = Some((format!("Unexpected reply from the sender: {other}"), true)),
@@ -357,7 +364,10 @@ impl SendPanel {
             Some(c) => {
                 let left = c.until.saturating_duration_since(Instant::now()).as_secs();
                 ui.label(RichText::new(&c.code).monospace().size(40.0).color(ACCENT));
-                ui.label(RichText::new(format!("On a phone choose Receive, type the code and tap Pair. On a computer type it in the receive window. Valid for {}:{:02}, one use.", left / 60, left % 60)).color(MUTED));
+                if !c.fingerprint.is_empty() {
+                    ui.label(RichText::new(format!("Key fingerprint {}", c.fingerprint)).monospace().color(ACCENT));
+                }
+                ui.label(RichText::new(format!("On a phone choose Receive, type the code and tap Pair. On a computer type it in the receive window. Each receiver asks you to confirm the fingerprint above. Valid for {}:{:02}, one use.", left / 60, left % 60)).color(MUTED));
                 let link = c.link.clone();
                 ui.horizontal(|ui| {
                     if ui.button("Copy link").clicked() {
@@ -493,6 +503,9 @@ mod tests {
         let t = "pairing code 123456 (valid 2 minutes, one use)\npair: meshwav://pair?host=100.1.2.3&port=47900&pk=ab&code=123456\nor enter in the app: host=100.1.2.3";
         assert_eq!(parse_pairing(t), Some(("123456".into(), "meshwav://pair?host=100.1.2.3&port=47900&pk=ab&code=123456".into())));
         assert_eq!(parse_pairing("error: x"), None);
+        let link = format!("meshwav://pair?host=100.1.2.3&port=47900&pk={}&code=123456", "07".repeat(32));
+        assert_eq!(fingerprint_of_link(&link), "DBA9-8DD2-C3ED");
+        assert_eq!(fingerprint_of_link("meshwav://pair?host=100.1.2.3&port=47900&pk=ab&code=123456"), "");
         assert_eq!(parse_pairing("pairing code abcdef\npair: x"), None);
     }
 

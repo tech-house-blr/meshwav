@@ -367,3 +367,34 @@ fn a_sender_is_found_only_while_it_shows_a_code_and_pairs_with_just_the_code() {
     let s = Settings { agent: found[0].addr, agent_key: found[0].key, identity: id, name: "test pc".into() };
     pair(&s, "654321", &AtomicBool::new(false)).expect("pairing with a discovered key");
 }
+
+#[test]
+fn a_sender_found_by_code_is_only_tried_after_its_fingerprint_is_confirmed() {
+    use meshwav_receiver::discover::{pair_with_senders, Found};
+    use std::net::UdpSocket;
+    let agent = Agent::start();
+    agent.open_pairing("246810");
+    let real = Found { addr: agent.addr, key: agent.key };
+    // An impostor answers the probe with a key of its own and records everything sent to it.
+    let impostor = UdpSocket::bind("127.0.0.1:0").unwrap();
+    impostor.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let fake = Found { addr: impostor.local_addr().unwrap(), key: Keypair::generate().public };
+    let stop = AtomicBool::new(false);
+    let want = real.fingerprint();
+
+    // Declined: nothing is sent to anyone, and the real sender's pairing window is still usable.
+    let r = pair_with_senders(vec![fake.clone(), real.clone()], "246810", Keypair::generate(), "pc".into(), &stop, &mut |_| false);
+    assert!(r.is_err());
+    let mut buf = [0u8; 256];
+    assert!(impostor.recv_from(&mut buf).is_err(), "nothing may reach a sender that was not confirmed");
+
+    // The person compares fingerprints: the impostor's differs, so only the real sender is tried.
+    let seen = std::cell::RefCell::new(vec![]);
+    let r = pair_with_senders(vec![fake.clone(), real.clone()], "246810", Keypair::generate(), "pc".into(), &stop, &mut |f| {
+        seen.borrow_mut().push(f.addr);
+        f.fingerprint() == want
+    });
+    assert_eq!(r.expect("the confirmed sender pairs").key, real.key);
+    assert_eq!(*seen.borrow(), vec![fake.addr, real.addr], "every sender is asked about");
+    assert!(impostor.recv_from(&mut buf).is_err(), "the impostor never received a handshake message");
+}

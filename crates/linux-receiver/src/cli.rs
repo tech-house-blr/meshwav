@@ -1,4 +1,5 @@
 //! The receiving side's command line, shared by `meshwav-receiver` and `meshwav receive`.
+use audio_protocol::handshake;
 use crate::sink::{Pacat, RawFile, Sink};
 use crate::store::{self, Paired};
 use crate::{pair, run, Settings, Status};
@@ -15,9 +16,10 @@ extern "C" fn on_signal(_: libc::c_int) {
 const USAGE_TEMPLATE: &str = "{PROG}: play a Meshwav sender's audio on this computer
 
 usage:
-  {PROG} pair CODE [--name NAME]
+  {PROG} pair CODE [--name NAME] [--fingerprint FP]
       Pair once. Type the 6-digit code the sender is showing; the sender is found on your tailnet.
-      A meshwav://pair link works too.
+      You are asked to confirm the sender's key fingerprint against the one on its screen, or pass it
+      as --fingerprint 4F2A-91C0-7B3E. A meshwav://pair link works too and needs no confirmation.
   {PROG} run [--latency-ms N] [--device SINK] [--lossless]
   {PROG} outputs
       Connect to the paired agent and play. Reconnects by itself. Ctrl-C stops and hands the agent's audio back.
@@ -26,6 +28,7 @@ usage:
 
 options:
   --dir PATH         settings folder (default ~/.config/meshwav/receiver)
+  --fingerprint FP   with `pair CODE`: pair only with the sender whose key fingerprint is FP
   --name NAME        device name shown in the agent's list (default: this computer's host name)
   --device SINK      play to this sound-card output instead of the default (names from `outputs`)
   --lossless         with `run`: ask the sender for uncompressed audio (about 1.7 Mbit/s) instead of Opus
@@ -78,6 +81,7 @@ pub fn run_cli(program: &str, args: Vec<String>) {
     };
     let output = flag("--output");
     let device = flag("--device");
+    let want = flag("--fingerprint").map(|f| handshake::normalize_fingerprint(&f).unwrap_or_else(|| die("--fingerprint must be 12 hex digits like 4F2A-91C0-7B3E")));
     let cmd = args.first().cloned().unwrap_or_default();
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -95,7 +99,8 @@ pub fn run_cli(program: &str, args: Vec<String>) {
                 pair(&s, &l.code, &STOP).map(|_| Paired { agent, key: l.key })
             } else {
                 eprintln!("looking for the device showing code {arg} ...");
-                crate::discover::pair_with_code(arg.trim(), identity(), name, &STOP)
+                let want = want.clone();
+                crate::discover::pair_with_code(arg.trim(), identity(), name, &STOP, &mut |f| confirm_sender(f, want.as_deref()))
             };
             let p = paired.unwrap_or_else(|e| die(e));
             store::save_paired(&dir, &p).unwrap_or_else(|e| die(format!("saving the pairing: {e}")));
@@ -139,5 +144,45 @@ pub fn run_cli(program: &str, args: Vec<String>) {
         },
         "" | "help" | "--help" | "-h" => print!("{}", usage()),
         other => die(format!("unknown command `{other}`\n\n{}", usage())),
+    }
+}
+
+/// Whether to pair with a sender found by code alone. With `--fingerprint` the answer is automatic
+/// (it must be the sender's own fingerprint); otherwise a person is asked, and without a terminal the
+/// answer is no, so a script can never pair with an unverified sender by accident.
+fn confirm_sender(f: &crate::discover::Found, want: Option<&str>) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    let fp = f.fingerprint();
+    if let Some(w) = want {
+        if fp == w {
+            return true;
+        }
+        eprintln!("skipping {} (key fingerprint {fp} is not {w})", f.addr);
+        return false;
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!("found {} with key fingerprint {fp}; not pairing without confirmation (pass --fingerprint {fp} if it matches the sender's screen)", f.addr);
+        return false;
+    }
+    eprint!("Found a sender at {} with key fingerprint {fp}.\nDoes that match the fingerprint on the sender's screen? [y/N] ", f.addr);
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).is_ok() && matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discover::Found;
+
+    fn found(k: u8) -> Found {
+        Found { addr: "100.64.0.9:47900".parse().unwrap(), key: [k; 32] }
+    }
+
+    #[test]
+    fn a_given_fingerprint_accepts_only_that_sender() {
+        let f = found(7);
+        assert!(confirm_sender(&f, Some("DBA9-8DD2-C3ED")));
+        assert!(!confirm_sender(&found(8), Some("DBA9-8DD2-C3ED")));
     }
 }

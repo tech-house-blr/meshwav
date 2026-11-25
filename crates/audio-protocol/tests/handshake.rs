@@ -374,3 +374,16 @@ fn one_address_cannot_use_up_the_shared_rate_budget() {
     assert_eq!(served, MSG1_PER_SEC_PER_SOURCE, "one address gets its own per-second allowance");
     assert!(matches!(srv.handle(host(7, 6000), &m1(9999), 20_000), Outcome::Reply(_)));
 }
+
+#[test]
+fn fingerprint_is_stable_short_and_forgiving_to_type() {
+    // Same vector as the Android test (PairLinkTest.kt).
+    let fp = fingerprint(&[7u8; 32]);
+    assert_eq!(fp, "DBA9-8DD2-C3ED");
+    assert_ne!(fp, fingerprint(&[8u8; 32]));
+    assert_eq!(normalize_fingerprint(&fp.to_lowercase().replace('-', " ")), Some(fp.clone()));
+    assert_eq!(normalize_fingerprint("4f2a91c07b3e"), Some("4F2A-91C0-7B3E".into()));
+    for bad in ["", "4F2A-91C0", "4F2A-91C0-7B3E-00", "4F2A-91C0-7B3G", "ZZZZ-ZZZZ-ZZZZ"] {
+        assert_eq!(normalize_fingerprint(bad), None, "{bad}");
+    }
+}
