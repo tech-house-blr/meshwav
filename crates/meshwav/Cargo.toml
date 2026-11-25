@@ -17,3 +17,9 @@ meshwav-receiver-gui = { path = "../linux-receiver-gui" }
 
 [dev-dependencies]
 audio-protocol = { path = "../audio-protocol" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.54", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
