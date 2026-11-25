@@ -10,6 +10,12 @@ pub trait Sink: Send {
     fn write(&mut self, pcm: &[i16]) -> io::Result<()>;
 }
 
+impl Sink for Box<dyn Sink> {
+    fn write(&mut self, pcm: &[i16]) -> io::Result<()> {
+        (**self).write(pcm)
+    }
+}
+
 impl<F: FnMut(&[i16]) -> io::Result<()> + Send> Sink for F {
     fn write(&mut self, pcm: &[i16]) -> io::Result<()> {
         self(pcm)
@@ -42,7 +48,28 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
     out
 }
 
+/// The system's sound output as a [`Sink`]: `pacat` on Linux, WASAPI on Windows.
+pub fn open_default(latency_ms: u32, device: Option<&str>) -> io::Result<Box<dyn Sink>> {
+    #[cfg(windows)]
+    {
+        Ok(Box::new(crate::wasapi::Wasapi::start(latency_ms, device)?))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Box::new(Pacat::start(latency_ms, device)?))
+    }
+}
+
 pub fn list_outputs() -> Vec<Output> {
+    #[cfg(windows)]
+    {
+        crate::wasapi::list_outputs()
+    }
+    #[cfg(not(windows))]
+    list_outputs_pactl()
+}
+
+fn list_outputs_pactl() -> Vec<Output> {
     Command::new("pactl")
         .args(["list", "sinks"])
         .env("LC_ALL", "C")

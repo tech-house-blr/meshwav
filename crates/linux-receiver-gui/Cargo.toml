@@ -16,6 +16,12 @@ path = "src/main.rs"
 
 [dependencies]
 meshwav-receiver = { path = "../linux-receiver" }
+png = "0.17"
+
+[target.'cfg(unix)'.dependencies]
 eframe = { version = "0.29", default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
 ksni = { version = "0.3", features = ["blocking"] }
-png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
+tray-icon = "0.19"

@@ -2,9 +2,15 @@
 //! standby, set the volume. Send: start and stop the sender service, show a pairing code, manage
 //! paired receivers. One mode runs at a time. The receiving engine is the library the command-line
 //! receiver uses.
+#[cfg(unix)]
 mod send;
+#[cfg(windows)]
+#[path = "send_windows.rs"]
+mod send;
+#[cfg(windows)]
+mod wintray;
 use eframe::egui::{self, Color32, FontId, RichText, TextStyle};
-use meshwav_receiver::sink::{list_outputs, Gain, Output, Pacat, Volume};
+use meshwav_receiver::sink::{list_outputs, open_default, Gain, Output, Volume};
 use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Snapshot, Status};
 use std::path::PathBuf;
@@ -24,6 +30,38 @@ const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon-256.png");
 const TRAY_ICON: &[u8] = include_bytes!("../assets/tray-64.png");
 
 /// RGBA8 pixels of an embedded PNG.
+#[cfg(unix)]
+fn make_tray(tx: Sender<TrayCmd>, ctx: &egui::Context) -> Option<TrayHandle> {
+    use ksni::blocking::TrayMethods;
+    Tray { state: "Starting".into(), tx, ctx: ctx.clone() }
+        .spawn()
+        .map_err(|e| eprintln!("meshwav-receiver-gui: no tray icon ({e}); the window works without it"))
+        .ok()
+}
+#[cfg(unix)]
+fn shutdown_tray(t: TrayHandle) {
+    t.shutdown().wait();
+}
+#[cfg(unix)]
+fn set_tray_state(t: &TrayHandle, state: String) {
+    t.update(|tray| tray.state = state);
+}
+#[cfg(windows)]
+fn make_tray(tx: Sender<TrayCmd>, ctx: &egui::Context) -> Option<TrayHandle> {
+    let (rgba, w, h) = decode_png(TRAY_ICON)?;
+    wintray::WinTray::new(rgba, w, h, tx, ctx.clone())
+        .map_err(|e| eprintln!("meshwav-receiver-gui: no tray icon ({e}); the window works without it"))
+        .ok()
+}
+#[cfg(windows)]
+fn shutdown_tray(t: TrayHandle) {
+    drop(t);
+}
+#[cfg(windows)]
+fn set_tray_state(t: &TrayHandle, state: String) {
+    t.set_state(&state);
+}
+
 fn decode_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let mut r = png::Decoder::new(bytes).read_info().ok()?;
     let mut buf = vec![0; r.output_buffer_size()];
@@ -40,13 +78,21 @@ enum TrayCmd {
     Quit,
 }
 
+#[cfg(unix)]
+type TrayHandle = ksni::blocking::Handle<Tray>;
+#[cfg(windows)]
+type TrayHandle = wintray::WinTray;
+
+#[cfg(unix)]
 /// The notification-area icon (StatusNotifierItem): shows the state on hover, and offers Show window and Quit.
+#[cfg(unix)]
 struct Tray {
     state: String,
     tx: Sender<TrayCmd>,
     ctx: egui::Context,
 }
 
+#[cfg(unix)]
 impl Tray {
     fn send(&self, c: TrayCmd) {
         let _ = self.tx.send(c);
@@ -54,6 +100,7 @@ impl Tray {
     }
 }
 
+#[cfg(unix)]
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
         "meshwav-receiver".into()
@@ -139,7 +186,7 @@ struct App {
     pairing: Option<Pairing>,
     message: Option<(String, Color32)>,
     confirm_forget: bool,
-    tray: Option<ksni::blocking::Handle<Tray>>,
+    tray: Option<TrayHandle>,
     tray_cmds: Receiver<TrayCmd>,
     tray_state: String,
     mode: Mode,
@@ -166,13 +213,7 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         style(&cc.egui_ctx);
         let (tx, rx) = channel();
-        let tray = {
-            use ksni::blocking::TrayMethods;
-            Tray { state: "Starting".into(), tx, ctx: cc.egui_ctx.clone() }
-                .spawn()
-                .map_err(|e| eprintln!("meshwav-receiver-gui: no tray icon ({e}); the window works without it"))
-                .ok()
-        };
+        let tray = make_tray(tx, &cc.egui_ctx);
         let dir = store::default_dir();
         let base = dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dir.clone());
         let paired = store::load_paired(&dir).ok().flatten();
@@ -220,7 +261,7 @@ impl App {
             Ok(i) => i,
             Err(e) => return self.fail(format!("identity: {e}")),
         };
-        let sink = match Pacat::start(40, Some(&self.device)) {
+        let sink = match open_default(40, Some(&self.device)) {
             Ok(s) => s,
             Err(e) => return self.fail(e.to_string()),
         };
@@ -469,7 +510,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
         self.stop();
         if let Some(t) = self.tray.take() {
-            t.shutdown().wait();
+            shutdown_tray(t);
         }
         let _ = std::fs::write(volume_path(&self.dir), self.volume.percent().to_string());
     }
@@ -488,7 +529,7 @@ impl App {
         };
         if state != self.tray_state {
             self.tray_state = state.clone();
-            t.update(|tray| tray.state = state);
+            set_tray_state(t, state);
         }
     }
 
