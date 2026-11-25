@@ -13,3 +13,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libopus-dev
       - run: cargo test --workspace
+
+  # Windows: the protocol, codec and transport crates must build and pass their tests.
+  # The agent and receiver are added here as they are made portable.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p audio-protocol -p audio-codec -p audio-transport
