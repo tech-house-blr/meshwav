@@ -110,7 +110,8 @@ pub fn restart_service() -> Result<(), String> {
 /// the sender is its own program.
 pub fn install_service(_exe: &Path) -> Result<(), String> {
     let agent = agent_exe()?;
-    let value = format!("\"{}\"", agent.display());
+    // `conhost --headless` runs the console program with no window at sign-in.
+    let value = format!("conhost.exe --headless \"{}\"", agent.display());
     let o = reg(&["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])?;
     if !o.status.success() {
         return Err(format!("could not add the login startup entry: {}", String::from_utf8_lossy(&o.stderr).trim()));

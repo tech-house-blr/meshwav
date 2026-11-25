@@ -337,7 +337,11 @@ fn open_capture(_source: &str) -> (Box<dyn Read + Send>, Option<std::process::Ch
 }
 
 fn tailscale_ip() -> Option<String> {
-    let out = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    let mut c = Command::new("tailscale");
+    c.args(["ip", "-4"]);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // no console window flashing up
+    let out = c.output().ok()?;
     String::from_utf8(out.stdout)
         .ok()?
         .lines()
