@@ -1,6 +1,6 @@
 //! The receiving side's command line, shared by `meshwav-receiver` and `meshwav receive`.
 use audio_protocol::handshake;
-use crate::sink::{Pacat, RawFile, Sink};
+use crate::sink::{RawFile, Sink};
 use crate::store::{self, Paired};
 use crate::{pair, run, Settings, Status};
 use std::path::PathBuf;
@@ -22,8 +22,11 @@ usage:
       You are asked to confirm the sender's key fingerprint against the one on its screen, or pass it
       as --fingerprint 4F2A-91C0-7B3E. A meshwav://pair link works too and needs no confirmation.
   {PROG} run [--latency-ms N] [--device SINK] [--lossless]
-  {PROG} outputs
       Connect to the paired agent and play. Reconnects by itself. Ctrl-C stops and hands the agent's audio back.
+  {PROG} outputs
+      List the sound outputs that `--device` accepts.
+  {PROG} tone [--device SINK] [--latency-ms N]
+      Play a quiet 440 Hz tone for two seconds, to check that this computer's sound output works.
   {PROG} forget
       Forget the paired agent.
 
@@ -117,12 +120,24 @@ pub fn run_cli(program: &str, args: Vec<String>) {
                 println!("{}\t{}", o.name, o.description);
             }
         }
+        "tone" => {
+            let mut sink = crate::sink::open_default(latency, device.as_deref()).unwrap_or_else(|e| die(e));
+            let frame: Vec<i16> = (0..480).flat_map(|i| {
+                let v = ((i as f32 / 48.0 * std::f32::consts::TAU * 0.44).sin() * 3000.0) as i16;
+                [v, v]
+            }).collect();
+            for _ in 0..200 {
+                sink.write(&frame).unwrap_or_else(|e| die(format!("playing: {e}")));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            println!("played 2 s of 440 Hz");
+        }
         "run" => {
             let p = store::load_paired(&dir).unwrap_or_else(|e| die(e)).unwrap_or_else(|| die(format!("not paired yet; see `{} pair`", prog())));
             let s = Settings { agent: p.agent, agent_key: p.key, identity: identity(), name };
             let sink: Box<dyn Sink> = match &output {
                 Some(f) => Box::new(RawFile::create(f).unwrap_or_else(|e| die(format!("--output: {e}")))),
-                None => Box::new(Pacat::start(latency, device.as_deref()).unwrap_or_else(|e| die(e))),
+                None => crate::sink::open_default(latency, device.as_deref()).unwrap_or_else(|e| die(e)),
             };
             let status = Status::default();
             status.set_lossless(lossless);

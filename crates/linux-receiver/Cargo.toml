@@ -25,3 +25,4 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 ctrlc = "3"
+cpal = "0.15"

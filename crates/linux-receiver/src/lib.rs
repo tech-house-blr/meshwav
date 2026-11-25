@@ -9,5 +9,7 @@ pub mod jitter;
 pub mod session;
 pub mod sink;
 pub mod store;
+#[cfg(windows)]
+pub mod wasapi;
 
 pub use session::{pair, run, Settings, Snapshot, Status};
