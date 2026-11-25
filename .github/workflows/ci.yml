@@ -31,3 +31,10 @@ jobs:
       # the agent and receiver must at least build, and their unit tests (not the Linux-audio end-to-end ones) pass
       - run: cargo build -p meshwav-agent -p meshwav-receiver
       - run: cargo test --lib -p meshwav-agent -p meshwav-receiver
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-binaries
+          path: |
+            target/debug/meshwav-agent.exe
+            target/debug/meshwav-receiver.exe
+          retention-days: 3
