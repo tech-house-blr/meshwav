@@ -51,6 +51,22 @@ object Handshake {
     fun validCode(code: String) = code.length == 6 && code.all { it in '0'..'9' }
 
     /**
+     * A sender's key as people compare it, like `4F2A-91C0-7B3E` (48 bits). Same as `fingerprint` in
+     * `crates/audio-protocol/src/handshake.rs`. A sender found by its code alone is not authenticated,
+     * so the person confirms this against the sender's screen before the code is used.
+     */
+    fun fingerprint(key: ByteArray): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update("meshwav-fp-v1".toByteArray()); md.update(key)
+        val s = md.digest().take(6).joinToString("") { "%02X".format(it) }
+        return "${s.substring(0, 4)}-${s.substring(4, 8)}-${s.substring(8, 12)}"
+    }
+
+    /** Fingerprint of a 64-hex-digit key, or null if it is not one. */
+    fun fingerprintOfHex(pkHex: String): String? =
+        if (Regex("[0-9a-fA-F]{64}").matches(pkHex)) fingerprint(ByteArray(32) { pkHex.substring(2 * it, 2 * it + 2).toInt(16).toByte() }) else null
+
+    /**
      * True only for a tailnet address written as a literal: IPv4 100.64.0.0/10 or IPv6
      * fd7a:115c:a1e0::/48. A name is refused so that checking it never needs a DNS lookup, and a
      * pairing link or typed line can never send this phone anywhere outside the tailnet.

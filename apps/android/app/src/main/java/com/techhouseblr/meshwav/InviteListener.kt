@@ -18,12 +18,16 @@ class InviteListener {
     class Sender(val host: String, val port: Int, val publicKey: ByteArray)
 
     @Volatile private var sock: DatagramSocket? = null
-    @Volatile private var cancelled = false
+    @Volatile var cancelled = false; private set
 
     fun cancel() { cancelled = true; sock?.close() }
 
-    /** Blocks until a sender shows up, [timeoutMs] passes or [cancel] is called. Call off the main thread. */
-    fun wait(timeoutMs: Long): Result<Sender?> {
+    /**
+     * Blocks until a sender shows up and [accept] approves it, [timeoutMs] passes or [cancel] is called.
+     * [accept] is where the person compares the sender's key fingerprint with the one on its screen; a
+     * sender that is refused is ignored and listening goes on. Call off the main thread.
+     */
+    fun wait(timeoutMs: Long, accept: (Sender) -> Boolean): Result<Sender?> {
         val mine = tailnetAddress() ?: return Result.failure(IllegalStateException("Tailscale does not seem to be connected on this phone"))
         val s = try {
             DatagramSocket(null).apply { reuseAddress = true; bind(java.net.InetSocketAddress(mine, Handshake.INVITE_PORT)); soTimeout = 500 }
@@ -40,7 +44,8 @@ class InviteListener {
                 val from = pkt.address
                 if (!isTailnet(from)) continue
                 val (key, port) = Handshake.parseInvite(buf, pkt.length) ?: continue
-                return Result.success(Sender(from.hostAddress ?: continue, port, key))
+                val sender = Sender(from.hostAddress ?: continue, port, key)
+                if (accept(sender)) return Result.success(sender)
             }
         } catch (_: java.net.SocketException) {
             // closed by cancel()

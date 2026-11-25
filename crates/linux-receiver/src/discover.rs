@@ -17,6 +17,13 @@ pub struct Found {
     pub key: PublicKey,
 }
 
+impl Found {
+    /// What a person compares with the fingerprint the sender shows next to its code.
+    pub fn fingerprint(&self) -> String {
+        handshake::fingerprint(&self.key)
+    }
+}
+
 use audio_transport::tailnet_peers;
 
 /// Probe the given targets and return every sender that answered.
@@ -71,11 +78,18 @@ pub fn find_senders() -> Vec<Found> {
 }
 
 /// Pair using only the 6-digit code: find the sender showing it, then run the normal pairing.
+///
+/// A sender found this way is not authenticated: any tailnet device can answer the probe with a
+/// key of its own, and pairing with it would hand it the material to recover the code offline. So
+/// `confirm` is asked about every sender before anything code-dependent is sent, and only senders
+/// it approves are tried. Callers approve by comparing [`handshake::fingerprint`] with the one the
+/// real sender shows next to its code.
 pub fn pair_with_code(
     code: &str,
     identity: handshake::Keypair,
     name: String,
     stop: &std::sync::atomic::AtomicBool,
+    confirm: &mut dyn FnMut(&Found) -> bool,
 ) -> Result<crate::store::Paired, String> {
     if !handshake::valid_code(code) {
         return Err("the pairing code is 6 digits".into());
@@ -84,8 +98,26 @@ pub fn pair_with_code(
     if senders.is_empty() {
         return Err("No device is showing a pairing code. Start pairing on the sender first (Start in Send mode on the phone, or `meshwav pair`).".into());
     }
-    let mut last = String::new();
+    pair_with_senders(senders, code, identity, name, stop, confirm)
+}
+
+/// The part of [`pair_with_code`] after discovery: ask about each sender, try the approved ones.
+pub fn pair_with_senders(
+    senders: Vec<Found>,
+    code: &str,
+    identity: handshake::Keypair,
+    name: String,
+    stop: &std::sync::atomic::AtomicBool,
+    confirm: &mut dyn FnMut(&Found) -> bool,
+) -> Result<crate::store::Paired, String> {
+    let mut last = "No sender was confirmed, so nothing was sent. Compare the key fingerprint with the one the sender shows.".to_string();
     for f in senders {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("stopped".into());
+        }
+        if !confirm(&f) {
+            continue;
+        }
         let s = crate::session::Settings { agent: f.addr, agent_key: f.key, identity: identity.clone(), name: name.clone() };
         match crate::session::pair(&s, code, stop) {
             Ok(()) => return Ok(crate::store::Paired { agent: f.addr, key: f.key }),

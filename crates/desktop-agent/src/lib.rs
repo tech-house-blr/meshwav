@@ -251,7 +251,8 @@ fn new_code() -> String {
 
 fn pairing_text(addr: SocketAddr, public: &[u8; 32], code: &str) -> String {
     format!(
-        "pairing code {code} (valid 2 minutes, one use)\npair: meshwav://pair?host={}&port={}&pk={}&code={code}\nor enter in the app: host={} port={} pk={} code={code}",
+        "pairing code {code} (valid 2 minutes, one use)\nkey fingerprint {}  (a receiver finding this sender by code alone asks you to confirm it)\npair: meshwav://pair?host={}&port={}&pk={}&code={code}\nor enter in the app: host={} port={} pk={} code={code}",
+        audio_protocol::handshake::fingerprint(public),
         addr.ip(),
         addr.port(),
         hex(public),

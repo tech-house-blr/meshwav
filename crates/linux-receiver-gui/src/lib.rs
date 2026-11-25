@@ -112,6 +112,16 @@ impl Worker {
 struct Pairing {
     stop: Arc<AtomicBool>,
     done: Receiver<Result<Paired, String>>,
+    /// Senders found by code alone, waiting for the person to compare fingerprints.
+    ask: Receiver<Ask>,
+    asking: Option<Ask>,
+}
+
+/// A sender found by code alone. Nothing is sent to it until the person says its fingerprint matches.
+struct Ask {
+    addr: std::net::SocketAddr,
+    fingerprint: String,
+    reply: Sender<bool>,
 }
 
 struct App {
@@ -267,6 +277,7 @@ impl App {
         let name: String = self.name.trim().chars().take(32).collect();
         let name = if name.is_empty() { store::host_name() } else { name };
         let (tx, rx) = channel();
+        let (ask_tx, ask_rx) = channel::<Ask>();
         let stop = Arc::new(AtomicBool::new(false));
         let st = stop.clone();
         if text.contains("meshwav://") {
@@ -289,15 +300,35 @@ impl App {
             if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
                 return self.fail("The pairing code is 6 digits".into());
             }
+            let ask_tx = ask_tx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(meshwav_receiver::discover::pair_with_code(&code, identity, name, &st));
+                let mut confirm = |f: &meshwav_receiver::discover::Found| {
+                    let (reply, answer) = channel();
+                    let fingerprint = f.fingerprint();
+                    if ask_tx.send(Ask { addr: f.addr, fingerprint, reply }).is_err() {
+                        return false;
+                    }
+                    loop {
+                        match answer.recv_timeout(Duration::from_millis(200)) {
+                            Ok(yes) => return yes,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !st.load(Ordering::Relaxed) => {}
+                            Err(_) => return false,
+                        }
+                    }
+                };
+                let _ = tx.send(meshwav_receiver::discover::pair_with_code(&code, identity, name, &st.clone(), &mut confirm));
             });
         }
         self.message = Some(("Looking for the device and pairing, this can take up to 15 seconds".into(), MUTED));
-        self.pairing = Some(Pairing { stop, done: rx });
+        self.pairing = Some(Pairing { stop, done: rx, ask: ask_rx, asking: None });
     }
 
     fn poll(&mut self) {
+        if let Some(p) = &mut self.pairing {
+            if p.asking.is_none() {
+                p.asking = p.ask.try_recv().ok();
+            }
+        }
         if let Some(p) = &self.pairing {
             match p.done.try_recv() {
                 Ok(Ok(paired)) => {
@@ -464,7 +495,7 @@ impl App {
     fn pairing_screen(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Not paired with a sender yet.").color(MUTED));
         ui.add_space(10.0);
-        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav pair` on a computer). It shows a 6-digit code. Type it here.");
+        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav pair` on a computer). It shows a 6-digit code and a key fingerprint. Type the code here, then confirm the fingerprint.");
         ui.add_space(8.0);
         let busy = self.pairing.is_some();
         ui.add_enabled_ui(!busy, |ui| {
@@ -475,6 +506,27 @@ impl App {
             }
         });
         ui.add_space(6.0);
+        let mut answer: Option<bool> = None;
+        if let Some(a) = self.pairing.as_ref().and_then(|p| p.asking.as_ref()) {
+            ui.separator();
+            ui.label(format!("Found a sender at {}. Its key fingerprint is", a.addr));
+            ui.label(RichText::new(&a.fingerprint).monospace().size(30.0).color(ACCENT));
+            ui.label("Does it match the fingerprint shown on the sender next to the code? If not, someone else on your network may be answering. Choose No.");
+            ui.horizontal(|ui| {
+                if ui.button("Yes, it matches").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("No, not this one").clicked() {
+                    answer = Some(false);
+                }
+            });
+            ui.add_space(6.0);
+        }
+        if let (Some(yes), Some(p)) = (answer, self.pairing.as_mut()) {
+            if let Some(a) = p.asking.take() {
+                let _ = a.reply.send(yes);
+            }
+        }
         ui.horizontal(|ui| {
             if busy {
                 if ui.button("Cancel").clicked() {

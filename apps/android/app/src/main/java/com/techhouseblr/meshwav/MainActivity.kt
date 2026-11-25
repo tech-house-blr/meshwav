@@ -195,7 +195,7 @@ class MainActivity : Activity() {
         pairBtn.text = "Cancel"
         status.text = "Looking for a sender showing this code. Open pairing on the computer now (waits about a minute)."
         Thread {
-            val r = l.wait(60_000)
+            val r = l.wait(60_000) { sender -> confirmSender(l, sender) }
             runOnUiThread {
                 if (invites !== l) return@runOnUiThread // cancelled
                 invites = null
@@ -212,6 +212,35 @@ class MainActivity : Activity() {
             }
         }.start()
     }
+
+    @Volatile private var confirmDialog: android.app.AlertDialog? = null
+
+    /**
+     * A sender found by code alone is not authenticated: any device on the tailnet can claim to be it.
+     * So nothing is sent until the person has compared its key fingerprint with the one on the sender's
+     * screen. Blocks the calling (worker) thread until they answer or the pairing is cancelled.
+     */
+    private fun confirmSender(l: InviteListener, sender: InviteListener.Sender): Boolean {
+        val answer = java.util.concurrent.ArrayBlockingQueue<Boolean>(1)
+        runOnUiThread {
+            if (invites !== l) { answer.offer(false); return@runOnUiThread }
+            status.text = "Found a sender. Check its key fingerprint."
+            confirmDialog = android.app.AlertDialog.Builder(this)
+                .setTitle("Is this your sender?")
+                .setMessage("A sender at ${sender.host} answered. Its key fingerprint is\n\n${Handshake.fingerprint(sender.publicKey)}\n\nDoes it match the fingerprint shown on the sender next to the code? If not, another device may be answering. Choose No.")
+                .setPositiveButton("Yes, it matches") { _, _ -> answer.offer(true) }
+                .setNegativeButton("No") { _, _ -> answer.offer(false) }
+                .setOnCancelListener { answer.offer(false) }
+                .show()
+        }
+        while (!l.cancelled) {
+            val r = answer.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (r != null) { runOnUiThread { confirmDialog = null }; return r }
+        }
+        runOnUiThread { confirmDialog?.dismiss(); confirmDialog = null }
+        return false
+    }
+
     override fun onPause() { super.onPause(); source.stop() }
 
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); handleIntent(i) }
@@ -225,7 +254,7 @@ class MainActivity : Activity() {
         if (!Handshake.tailnetHost(t.host)) { status.text = "Refused: ${t.host} is not a Tailscale address, so this link was not used."; return }
         android.app.AlertDialog.Builder(this)
             .setTitle("Pair with this sender?")
-            .setMessage("A pairing link asks this phone to receive audio from ${t.host}.\n\nSender key: ${t.pk.take(8)}…${t.pk.takeLast(8)}\n\nOnly continue if you started pairing on that computer just now.")
+            .setMessage("A pairing link asks this phone to receive audio from ${t.host}.\n\nSender key fingerprint: ${Handshake.fingerprintOfHex(t.pk)}\n\nOnly continue if you started pairing on that computer just now.")
             .setPositiveButton("Pair") { _, _ -> startReceiving(t.host, t.port, t.pk, t.code) }
             .setNegativeButton("Cancel", null)
             .show()
