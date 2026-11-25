@@ -67,8 +67,9 @@ jobs:
           set -e
           exe=target/release/meshwav.exe
           # a Windows-subsystem program only prints when started from a terminal, so go through cmd
-          cmd //c "$exe --help" | head -3
-          cmd //c "$exe receive outputs" | head -3
+          win='target\release\meshwav.exe'
+          cmd //c "$win --help" | head -3
+          cmd //c "$win receive outputs" | head -3
           name="meshwav-${GITHUB_REF_NAME//\//-}-windows-x86_64.exe"
           mkdir dist && cp "$exe" "dist/$name"
           (cd dist && sha256sum "$name" > "$name.sha256")
