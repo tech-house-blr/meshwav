@@ -21,6 +21,8 @@ jobs:
     env:
       # the Opus sources bundled with audiopus_sys ask for an old CMake minimum that new CMake rejects
       CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      # one handshake test does about 12,000 Noise handshakes; unoptimised that took over 6 minutes here
+      CARGO_PROFILE_TEST_OPT_LEVEL: '2'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -1,0 +1,3 @@
+# the Noise test vectors are compared byte for byte, so they must not get CRLF on Windows checkouts
+docs/vectors/*.txt text eol=lf
+apps/android/app/src/test/resources/*.txt text eol=lf
