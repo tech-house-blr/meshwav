@@ -9,6 +9,11 @@ fn kp(seed: u8) -> Keypair {
     Keypair::from_private([seed; 32])
 }
 
+/// A distinct tailnet address per `n`.
+fn host(n: u8, port: u16) -> SocketAddr {
+    format!("100.64.1.{n}:{port}").parse().unwrap()
+}
+
 fn addr(port: u16) -> SocketAddr {
     format!("100.64.0.2:{port}").parse().unwrap()
 }
@@ -247,23 +252,25 @@ fn pending_handshakes_are_capped_expire_and_msg1_is_rate_limited() {
     };
     let mut replies = 0;
     for i in 0..40 {
-        if matches!(srv.handle(addr(1000 + i as u16), &m1(i), 0), Outcome::Reply(_)) {
+        // different addresses, so only the shared cap is in play here
+        if matches!(srv.handle(host(i as u8, 1000), &m1(i), 0), Outcome::Reply(_)) {
             replies += 1;
         }
     }
     assert_eq!(replies, MAX_PENDING, "pending table is bounded");
     // after the pending TTL the table drains and new handshakes are served again
-    assert!(matches!(srv.handle(addr(5000), &m1(99), PENDING_TTL_MS + 1000), Outcome::Reply(_)));
+    assert!(matches!(srv.handle(host(1, 5000), &m1(99), PENDING_TTL_MS + 1000), Outcome::Reply(_)));
     // rate limit: more than MSG1_PER_SEC msg1 in one second are dropped even when slots are free
     let mut srv = Server::new(agent, vec![]);
     let mut served = 0;
     for i in 0..(MSG1_PER_SEC + 20) {
         let t = 10_000 + i as u64; // same second
-        let out = srv.handle(addr(100 + i as u16), &m1(i), t);
+        let from = host(i as u8, 100);
+        let out = srv.handle(from, &m1(i), t);
         if matches!(out, Outcome::Reply(_)) {
             served += 1;
         }
-        srv.handle(addr(100 + i as u16), &frame(KIND_XX, i, 3, &[0; 10]), t); // free the slot
+        srv.handle(from, &frame(KIND_XX, i, 3, &[0; 10]), t); // free the slot
     }
     assert_eq!(served, MSG1_PER_SEC);
 }
@@ -318,4 +325,52 @@ fn hello_is_answered_only_while_pairing_is_open_and_not_locked() {
     }
     assert!(matches!(s.handle(addr(1), &frame(KIND_HELLO, 7, 3, &[]), 2_000), Outcome::None), "only step 1 is a probe");
     assert!(matches!(s.handle(addr(1), &hello, 1_000 + PAIR_TTL_MS + 1), Outcome::None), "expired: silent");
+}
+
+#[test]
+fn one_address_cannot_lock_other_devices_out() {
+    let mut srv = Server::new(kp(1), vec![]);
+    let m1 = |i: u32| {
+        let mut ini = Initiator::new(&kp(9), None, None).unwrap();
+        frame(KIND_XX, i, 1, &ini.write_msg1().unwrap())
+    };
+    let attacker = |p: u16| host(200, p);
+    let legit = host(7, 6000);
+    let mut held = 0;
+    for i in 0..200u32 {
+        if matches!(srv.handle(attacker(1000 + i as u16), &m1(i), 10_000), Outcome::Reply(_)) {
+            held += 1;
+        }
+    }
+    assert_eq!(held, MAX_PENDING_PER_SOURCE, "one address keeps at most its own share of slots");
+    assert!(matches!(srv.handle(legit, &m1(9000), 10_050), Outcome::Reply(_)), "a different device is still served");
+    // the attacker keeps flooding every second for a minute; the other device is always served
+    for k in 1..=60u64 {
+        let t = 10_000 + k * 1000;
+        for i in 0..200u32 {
+            srv.handle(attacker(1000 + i as u16), &m1(100 * k as u32 + i), t);
+        }
+        let out = srv.handle(host(7, 6000 + k as u16), &m1(50_000 + k as u32), t + 10);
+        assert!(matches!(out, Outcome::Reply(_)), "device refused at second {k}");
+        srv.handle(host(7, 6000 + k as u16), &frame(KIND_XX, 50_000 + k as u32, 3, &[0; 10]), t + 20); // device finishes or fails
+    }
+}
+
+#[test]
+fn one_address_cannot_use_up_the_shared_rate_budget() {
+    let mut srv = Server::new(kp(1), vec![]);
+    let m1 = |i: u32| {
+        let mut ini = Initiator::new(&kp(9), None, None).unwrap();
+        frame(KIND_XX, i, 1, &ini.write_msg1().unwrap())
+    };
+    let mut served = 0;
+    for i in 0..500u32 {
+        let from = host(200, 1000 + i as u16);
+        if matches!(srv.handle(from, &m1(i), 20_000), Outcome::Reply(_)) {
+            served += 1;
+        }
+        srv.handle(from, &frame(KIND_XX, i, 3, &[0; 10]), 20_000); // free the slot at once
+    }
+    assert_eq!(served, MSG1_PER_SEC_PER_SOURCE, "one address gets its own per-second allowance");
+    assert!(matches!(srv.handle(host(7, 6000), &m1(9999), 20_000), Outcome::Reply(_)));
 }

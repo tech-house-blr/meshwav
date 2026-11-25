@@ -17,7 +17,8 @@ System audio content (may contain private material); control over the desktop's 
 | Rogue device injects/replays audio to the phone | Per-session AEAD key, replay window, receiver only accepts packets from the agent address that completed the control handshake. |
 | Spoofed discovery response | Discovery is only a hint (Tailscale peer list, a probe, or an invite). Identity is established by the handshake and the pairing code, then by key pinning. A discovery answer carries the sender's key, so on the very first code-only pairing the key is not checked beforehand: a hostile tailnet device that also knew the code could pose as the sender during that one single-use window. The old pairing link carries the key and avoids this. |
 | Pairing brute force | 6-digit code, 5 attempts, lockout, 2-min expiry, code never logged at info level. |
-| Resource exhaustion (handshake flood, UDP flood) | Max 1 pending unauthenticated handshake per source, short timeouts, unauthenticated UDP dropped before any parsing beyond header, bounded queues. |
+| Resource exhaustion (handshake flood, UDP flood) | At most 2 pending unauthenticated handshakes and 5 new handshakes per second per source address, inside a shared cap of 16 pending and 30 per second, so one device cannot lock the others out. Short timeouts, unauthenticated UDP dropped before any parsing beyond header, bounded queues. |
+| A pairing link or typed line points the phone at a host outside the tailnet | The Android app refuses any host that is not a tailnet address literal, in the activity and again in the playback service. A `meshwav://pair` link also asks for confirmation (host and key fingerprint) before the code is used. |
 | Credentials leakage | No hardcoded secrets. Keys generated on first run, stored with 0600 perms (Windows: DPAPI; Android: Keystore-wrapped). |
 | Audio sent to third parties | None: no analytics, no cloud calls; only tailnet peers. Documented and test-checked (no outbound to non-tailnet addresses). |
 | Downgrade | Version and codec set bound into the handshake transcript. |
@@ -38,3 +39,23 @@ Recommendation in docs: add a Tailscale ACL limiting the agent port to the phone
 Logs never contain audio, keys or pairing codes. `meshwav devices` shows paired devices and their state; there is no revoke command yet (see above).
 
 Removing a paired device: `meshwav remove <device>` (or Remove in the Send tab) deletes its key from `authorized_peers`, drops its live session at once and clears it as the chosen receiver. It can only return by pairing again with a new code.
+
+## Security review of 0.4.0
+
+A first review of the protocol, handshake, key storage, binding, pairing link and dependencies, done before 1.0. It was a read-through plus targeted tests, not an audit by a third party.
+
+Fixed after the review:
+- **Pairing link (high).** The Android app started pairing as soon as a `meshwav://pair` link was opened, with no confirmation and no check that the host was on the tailnet. A link on any web page could make the phone play an attacker's audio, contact an address outside the tailnet and keep that sender as its default. The app now refuses non-tailnet hosts and asks the user to confirm.
+- **Handshake slots (medium).** The limit of pending handshakes was shared, not per source, so one tailnet device sending handshake starts under different session ids could fill the table and keep every other device out, with no key and no pairing window. The limit is now per source address, and each source has its own start rate before the shared one.
+
+Checked and found sound:
+- Per-direction AEAD nonces, the replay window, the pairing PSK derivation, pairing code generation (uniform, 5 attempts, lockout, single use), file permissions on keys and the control socket, and the tailnet bind check.
+- 400,000 random inputs to the packet, control, handshake and server parsers produced no panics. This was a one-off run, not a standing fuzz test.
+- `cargo audit` reports no vulnerabilities. It warns about unmaintained or unsound crates (`audiopus_sys`, `paste`, `ttf-parser`, `zbus_names`, `zvariant`, and `heapless` 0.8 through the FLAC encoder in the sender). None is reachable from untrusted network input as far as this review could tell.
+
+Still open:
+- The Android Noise code, the Linux receiver session logic, the GUI and the `pactl` redirect handling were not reviewed.
+- The Android release is debug-signed. Releases carry no signatures or checksums from the build, and the workflow actions are pinned by tag, not by commit.
+- `meshwav pair CODE` puts the code on the command line, where a local user can see it in `ps` while it runs. The code is single-use.
+- The limits above count per address. Several malicious tailnet devices acting together can still use up the shared limits. A Tailscale ACL narrowing who can reach the agent port remains the better control.
+- Gradle (Android) dependencies were not audited.

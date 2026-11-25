@@ -218,8 +218,17 @@ class MainActivity : Activity() {
 
     private fun handleIntent(i: Intent?) {
         val d = i?.dataString ?: return
-        pairing.setText(d)
-        toggle(forceStart = true)
+        // A link can come from any web page or chat, so it never pairs by itself: it must name a
+        // tailnet sender, and the user confirms the sender before the code is used.
+        val t = parse(d)
+        if (t == null) { status.text = "Could not read the pairing link. It needs host, pk (64 hex) and the 6-digit code from the agent."; return }
+        if (!Handshake.tailnetHost(t.host)) { status.text = "Refused: ${t.host} is not a Tailscale address, so this link was not used."; return }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Pair with this sender?")
+            .setMessage("A pairing link asks this phone to receive audio from ${t.host}.\n\nSender key: ${t.pk.take(8)}…${t.pk.takeLast(8)}\n\nOnly continue if you started pairing on that computer just now.")
+            .setPositiveButton("Pair") { _, _ -> startReceiving(t.host, t.port, t.pk, t.code) }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun toggle(forceStart: Boolean = false) {
@@ -231,6 +240,7 @@ class MainActivity : Activity() {
         if (text.isNotBlank()) {
             val t = parse(text)
             if (t == null) { status.text = "Could not read the pairing line. It needs host, pk (64 hex) and the 6-digit code from the agent."; return }
+            if (!Handshake.tailnetHost(t.host)) { status.text = "Refused: ${t.host} is not a Tailscale address."; return }
             pairing.setText("") // the code is single-use; never keep it around
             startReceiving(t.host, t.port, t.pk, t.code)
         } else {

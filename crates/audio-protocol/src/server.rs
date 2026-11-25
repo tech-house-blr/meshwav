@@ -8,7 +8,7 @@
 //! * Pending handshakes are bounded and short-lived; msg1 intake is rate limited.
 use crate::handshake::{self, Keypair, PublicKey, Responder, SessionKeys, KIND_HELLO, KIND_XX, KIND_XXPSK3};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 pub const PAIR_TTL_MS: u64 = 120_000;
 pub const MAX_PAIR_FAILURES: u32 = 5;
@@ -17,6 +17,12 @@ pub const PENDING_TTL_MS: u64 = 5_000;
 pub const DONE_TTL_MS: u64 = 30_000;
 pub const MAX_PENDING: usize = 16;
 pub const MSG1_PER_SEC: u32 = 30;
+/// One address may hold this many unfinished handshakes at once, so a single tailnet device
+/// cannot fill the table and lock everybody else out.
+pub const MAX_PENDING_PER_SOURCE: usize = 2;
+/// One address may start this many handshakes per second. Checked before the shared budget above,
+/// so a flood from one address cannot use up the budget either.
+pub const MSG1_PER_SEC_PER_SOURCE: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Authorized {
@@ -56,6 +62,7 @@ pub struct Server {
     done: HashMap<(SocketAddr, u32), u64>,
     budget_sec: u64,
     budget_used: u32,
+    source_used: HashMap<IpAddr, u32>,
 }
 
 impl Server {
@@ -68,6 +75,7 @@ impl Server {
             done: HashMap::new(),
             budget_sec: 0,
             budget_used: 0,
+            source_used: HashMap::new(),
         }
     }
 
@@ -128,11 +136,17 @@ impl Server {
         }
     }
 
-    fn msg1_allowed(&mut self, now_ms: u64) -> bool {
+    fn msg1_allowed(&mut self, from: IpAddr, now_ms: u64) -> bool {
         let sec = now_ms / 1000;
         if sec != self.budget_sec {
             self.budget_sec = sec;
             self.budget_used = 0;
+            self.source_used.clear();
+        }
+        let used = self.source_used.entry(from).or_insert(0);
+        *used += 1;
+        if *used > MSG1_PER_SEC_PER_SOURCE {
+            return false; // this address is over its own limit; the shared budget stays free for others
         }
         self.budget_used += 1;
         self.budget_used <= MSG1_PER_SEC
@@ -143,7 +157,7 @@ impl Server {
         let Some(f) = handshake::parse_frame(datagram) else { return Outcome::None };
         let key = (from, f.sid);
         if f.kind == KIND_HELLO {
-            return self.on_hello(f.sid, f.step, now_ms);
+            return self.on_hello(from.ip(), f.sid, f.step, now_ms);
         }
         match f.step {
             1 => self.on_msg1(key, f.kind, f.body, now_ms),
@@ -154,9 +168,9 @@ impl Server {
 
     /// Discovery probe: answer with the public key, but only while a pairing window is open and not
     /// locked. A closed sender stays silent, so it cannot be found or fingerprinted.
-    fn on_hello(&mut self, sid: u32, step: u8, now_ms: u64) -> Outcome {
+    fn on_hello(&mut self, from: IpAddr, sid: u32, step: u8, now_ms: u64) -> Outcome {
         let open = self.pairing.as_ref().is_some_and(|w| now_ms >= w.locked_until_ms);
-        if step != 1 || !open || !self.msg1_allowed(now_ms) {
+        if step != 1 || !open || !self.msg1_allowed(from, now_ms) {
             return Outcome::None;
         }
         Outcome::Reply(handshake::frame(KIND_HELLO, sid, 2, &self.identity.public))
@@ -167,7 +181,7 @@ impl Server {
             // Retransmitted msg1 (our reply was lost): resend the stored reply, do no new work.
             return if p.kind == kind { Outcome::Reply(handshake::frame(kind, key.1, 2, &p.msg2)) } else { Outcome::None };
         }
-        if self.done.contains_key(&key) || !self.msg1_allowed(now_ms) {
+        if self.done.contains_key(&key) || !self.msg1_allowed(key.0.ip(), now_ms) {
             return Outcome::None;
         }
         let psk = match kind {
@@ -179,7 +193,7 @@ impl Server {
             },
             _ => return Outcome::None,
         };
-        if self.pending.len() >= MAX_PENDING {
+        if self.pending.len() >= MAX_PENDING || self.pending.keys().filter(|(a, _)| a.ip() == key.0.ip()).count() >= MAX_PENDING_PER_SOURCE {
             return Outcome::None;
         }
         let Ok(mut resp) = Responder::new(&self.identity, psk.as_ref()) else { return Outcome::None };

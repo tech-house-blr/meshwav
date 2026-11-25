@@ -51,6 +51,20 @@ object Handshake {
     fun validCode(code: String) = code.length == 6 && code.all { it in '0'..'9' }
 
     /**
+     * True only for a tailnet address written as a literal: IPv4 100.64.0.0/10 or IPv6
+     * fd7a:115c:a1e0::/48. A name is refused so that checking it never needs a DNS lookup, and a
+     * pairing link or typed line can never send this phone anywhere outside the tailnet.
+     */
+    fun tailnetHost(host: String): Boolean {
+        val h = host.trim().removePrefix("[").removeSuffix("]").lowercase()
+        Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""").matchEntire(h)?.let { m ->
+            val o = m.groupValues.drop(1).map { it.toInt() }
+            return o.all { it in 0..255 } && o[0] == 100 && o[1] in 64..127
+        }
+        return Regex("fd7a:115c:a1e0:[0-9a-f:]*").matches(h) && h.count { it == ':' } in 3..7
+    }
+
+    /**
      * Runs the handshake over a connected UDP socket (soTimeout must be set). Retransmits msg1,
      * and sends msg3 a few times since nothing acknowledges it. Blocking: call off the main thread.
      */
