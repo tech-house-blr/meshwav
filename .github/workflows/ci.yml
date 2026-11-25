@@ -18,6 +18,9 @@ jobs:
   # The agent and receiver are added here as they are made portable.
   windows:
     runs-on: windows-latest
+    env:
+      # the Opus sources bundled with audiopus_sys ask for an old CMake minimum that new CMake rejects
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
