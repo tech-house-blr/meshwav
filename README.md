@@ -47,7 +47,7 @@ sudo apt install ./meshwav_VERSION_ARCH.deb      # Debian, Ubuntu, Raspberry Pi 
 sudo dnf install ./meshwav-VERSION-1.ARCH.rpm    # Fedora (openSUSE: zypper install)
 ```
 
-On Arch, `packaging/PKGBUILD` builds the tagged source (`makepkg -si`). On Android, install the APK attached to the release (it is debug-signed; see [Android](#android)).
+On Arch, `packaging/PKGBUILD` builds the tagged source (`makepkg -si`). On Android, install the APK attached to the release (signed with the Tech House release key; see [Verifying the Android APK](#verifying-the-android-apk)).
 
 **2. Send from the computer.** Open **Meshwav** from the application menu, choose **Send**, and set up the sender. Or from a terminal:
 
@@ -134,11 +134,27 @@ If the tailnet is not up yet, the sender exits and systemd retries every 5 secon
 
 ## Android
 
-The app is in [`apps/android`](apps/android) (Kotlin, version 0.7.1). It has a Receive / Send switch and remembers the last mode.
+The app is in [`apps/android`](apps/android) (Kotlin, version 0.9.0). It has a Receive / Send switch and remembers the last mode.
 
 - **Receive.** Open a pairing window on the computer, then type the six-digit code on the phone and tap Pair. The app remembers every sender it has paired with: connect, make default or forget them under "Paired senders". With "Reconnect automatically" on (the default) it connects to the default sender when the app opens. A `meshwav://pair` link still works under "Use a pairing link instead". An opt-in "Low latency" checkbox lowers the receiver's jitter-buffer floor from 20 ms to 10 ms; it can crackle on a weak or relayed link, so it is off by default. An opt-in, experimental "Native audio output (AAudio)" checkbox plays through the phone's native audio API instead of AudioTrack; if it cannot open, the app falls back to AudioTrack and says why. It was tested on one phone only.
 - **Send.** Tap Start, allow Android's screen-capture prompt (only audio is taken), choose Lossless or Opus, then type the shown code on the computer (`meshwav pair 123456`). While sending, media volume on the phone is held at 0 and restored afterwards; some phones pause playback at 0. Lossless here is 48 kHz 16-bit audio as captured after Android's mixer, so it is not bit-perfect, and apps that block capture may be silent.
-- **Signing.** Release APKs are signed with the debug key. There is no release signing key yet, so moving to a build signed with another key will need an uninstall first.
+- **Signing.** From 0.9.0 the APK is signed with the Tech House release key. Earlier APKs were debug-signed. The new key is chained to the old debug key (Android key rotation, Android 9 and later), so a phone with an earlier build should update in place and keep its pairings. That update path has not been tried on a phone yet; if Android refuses the update, uninstall once and pair again.
+
+### Verifying the Android APK
+
+Each release lists `SHA256SUMS-android.txt` next to the APK. The APK itself carries the signing certificate; check that it is ours with `apksigner` from the Android SDK build-tools:
+
+```
+apksigner verify --print-certs meshwav-0.9.0.apk
+```
+
+The signer's certificate SHA-256 digest must be:
+
+```
+90:25:CB:D4:13:C3:F8:A9:D1:4F:9E:9A:61:36:C1:CF:4A:B0:4E:A1:35:50:51:60:0A:47:57:08:9A:FD:0E:82
+```
+
+(`9025cbd4…0e82` without the colons.) If it differs, do not install the file. The signing key is not in this repository.
 
 ## Performance
 
