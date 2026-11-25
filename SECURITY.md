@@ -25,7 +25,7 @@ Out of scope: Tailscale itself, and attacks that need an already-compromised dev
 - Meshwav only talks to Tailscale addresses. Listeners bind to the tailnet or loopback, and the receivers refuse other hosts.
 - Open a pairing link or type a pairing code only when you started pairing on the sender just now. The Android app asks you to confirm a link before using it.
 - When you pair with just the code, the receiver shows the key fingerprint of the sender it found. Confirm it matches the fingerprint on the sender's screen; if it does not, choose No. A pairing link or QR code skips this step because it carries the key.
-- Releases are not yet signed: the Android APK is debug-signed and the packages come without signatures. Download them only from this repository's releases page.
+- The Android APK is signed with the Tech House release key (check the fingerprint in the README). The Linux packages come with SHA-256 sums but no signatures. Download everything only from this repository's releases page.
 - Limiting the agent port with a Tailscale ACL to your own devices is recommended.
 
 See [docs/security.md](docs/security.md) for the threat model.

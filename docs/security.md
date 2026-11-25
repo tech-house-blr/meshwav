@@ -55,7 +55,7 @@ Checked and found sound:
 
 Still open:
 - The Android Noise code, the Linux receiver session logic, the GUI and the `pactl` redirect handling were not reviewed.
-- The Android release is debug-signed. Releases carry no signatures or checksums from the build, and the workflow actions are pinned by tag, not by commit.
+- The Android APK is signed with the Tech House release key from 0.5.0 (earlier APKs were debug-signed), but signing is done by hand on one machine, not in CI. The Linux packages carry SHA-256 sums but no signatures, and the workflow actions are pinned by tag, not by commit.
 - `meshwav pair CODE` puts the code on the command line, where a local user can see it in `ps` while it runs. The code is single-use.
 - The limits above count per address. Several malicious tailnet devices acting together can still use up the shared limits. A Tailscale ACL narrowing who can reach the agent port remains the better control.
 - Gradle (Android) dependencies were not audited.
