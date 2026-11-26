@@ -14,7 +14,11 @@ use std::time::Duration;
 
 /// Never hold more than this much captured audio: if the sender stalls, old audio is dropped, not queued.
 const MAX_BYTES: usize = 48_000 * 4 / 5; // 200 ms
-const SILENCE_AFTER: Duration = Duration::from_millis(10);
+/// Loopback delivers a block about every 10 ms while anything plays, with some jitter. Silence is
+/// only made up after a gap clearly longer than that (the output really is idle); a shorter wait
+/// would insert silence that the real audio then follows, adding time to the stream, which
+/// shows up as gaps and as the receiver trimming its buffer.
+const SILENCE_AFTER: Duration = Duration::from_millis(40);
 
 struct Shared {
     q: Mutex<VecDeque<u8>>,
@@ -125,7 +129,7 @@ impl Read for Loopback {
             let (g, timeout) = self.shared.ready.wait_timeout(q, SILENCE_AFTER).unwrap();
             q = g;
             if timeout.timed_out() && q.is_empty() {
-                let n = buf.len().min(48 * 10 * 4); // 10 ms of silence
+                let n = buf.len().min(48 * 40 * 4); // the 40 ms just waited, as silence
                 buf[..n].fill(0);
                 return Ok(n);
             }
