@@ -193,3 +193,37 @@ Findings and limits:
 - Native AAudio read 41 to 53 ms end to end on fresh connects. That excludes sender capture (at most about 16 to 20 ms, M4h), so the total may be about 57 to 73 ms. This is a sum of estimates, not a measurement, and it may miss the target on this phone. Only the first seconds of each fresh connect, and the one longer session, were read. The first phone was faster with native (27 to 36 ms, output about 17 ms).
 - The native session with 3,721 output underruns is unexplained, and no other long session was read to compare. It may have been affected by the way the test was driven (screen taps by a script), and this was not separated. Whether the underruns were audible was not recorded; the owner described the native output as working fine on this phone in a short listen.
 - Native AAudio stays opt-in and experimental. Not measured: other phones, wired or Bluetooth output on the M51, repeated long runs, a weak or relayed link.
+
+## M4j: Galaxy S25 speaker, thread priority and stalls (2026-11-26)
+
+Method: Galaxy SM-S938B, native AAudio output, lossless PCM (5 ms packets), sender on `liberation` over a direct tailnet path. Numbers are read from the app's stats panel as screenshots. The clock offset is known to about 2 ms. The phone's screen activity was not logged; "in use" and "idle" below are the owner's account of what he was doing.
+
+Before and after the playback thread priority change (#49), Bluetooth A2DP output:
+
+| Run | Packets | Output underruns | End to end |
+|---|---|---|---|
+| Before (sender on Windows) | about 25,000 | 9 | 34 ms |
+| After (sender on `liberation`) | 42,506 | 1 | 54 ms |
+
+The two runs used different senders, so this is not a clean comparison.
+
+Phone speaker, after #49 and #50 (one session, snapshots 5 to 6 minutes apart):
+
+| Time | Phone use | Stalls | Underruns | Packets over 20 ms apart | Output buffer |
+|---|---|---|---|---|---|
+| 1:04 | not recorded | 60 | 907 | 94 | 30 ms |
+| 1:09 | idle | 60 | 907 | 97 | 20 ms |
+| 1:14 | in use | 79 | 1,178 | 153 | 30 ms |
+| 1:20 | in use | 79 | 1,178 | 375 | 20 ms |
+
+- A stall is one run of empty output bursts. AAudio counts one underrun per empty burst, so one stall shows as many underruns (12 to 15 on average in these sessions).
+- Between 1:09 and 1:14, 19 new stalls and 56 new packet gaps over 20 ms; in the 5 idle minutes before, none and 3. Between 1:14 and 1:20, 222 new gaps but no new stalls: the buffer absorbed them. Stalls need a gap longer than the buffer. The longest packet gap was 90 ms.
+- The output buffer grew to 30 ms after stalls and shrank back to 14 to 20 ms after quiet minutes (#50).
+- Most stalls came right after a late write by the app (53 of 60 at 1:04), and packets arrived with no loss and none late (2 to 5 lost per 400,000).
+- Sender check: `tailscale0` on `liberation`, 120 s, 24,600 packets sent. The longest gap between two sent packets was 11 ms and none exceeded 20 ms. In a window of the same kind the phone saw 243 gaps over 20 ms in 3 minutes. The delay therefore appears after the packets leave the PC. The timestamps are taken as packets enter the tunnel, so they say nothing about the Wi-Fi leg.
+
+What this does not show:
+- The cause is not proven. Wi-Fi or Android delaying the phone's receive path while it is busy is the likely reason, but the Wi-Fi was not measured directly. The app already holds a low-latency Wi-Fi lock.
+- Raising the receive thread to audio priority is not shown to help; both threads were at that priority during these runs.
+- One phone, one session per row, no repeat on the M51 with these builds. The M51's 3,721-underrun session (M4i) stays unexplained, though these runs suggest phone load as a cause.
+
