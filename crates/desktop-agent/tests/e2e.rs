@@ -562,6 +562,55 @@ fn choosing_the_receiver_moves_the_stream_and_is_remembered() {
 }
 
 #[test]
+fn a_standby_receiver_can_ask_for_the_audio_and_it_sticks() {
+    let dir = workdir("playhere");
+    let port = free_port();
+    let mut agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    assert!(!seqs(&la.pump(500)).is_empty());
+    writeln!(agent.stdin, "pair").unwrap();
+    agent.stdin.flush().unwrap();
+    let (_, code2) = agent.pairing();
+    let db = dial(port, &kb, pk, Some(pairing_psk(&pk, &code2)), 2).unwrap();
+    let mut lb = Link::new(&db);
+
+    // B is on standby and is told the agent supports the request
+    let eb = lb.pump(1500);
+    assert!(seqs(&eb).is_empty(), "standby gets no audio");
+    assert!(eb.iter().any(|e| matches!(e, Ev::Ctl(Message::PlayHereSupported))), "support is announced");
+
+    // an unpaired device cannot move the stream
+    let stranger = Keypair::generate();
+    if let Some(ds) = dial(port, &stranger, pk, None, 3) {
+        let mut ls = Link::new(&ds);
+        ls.send(&Message::PlayHere);
+        ls.pump(300);
+    }
+    assert!(seqs(&la.pump(500)).len() > 10, "A still streams");
+
+    // B asks, and the stream moves
+    lb.send(&Message::PlayHere);
+    agent.wait_line("asked for the audio");
+    la.pump(200);
+    lb.pump(200);
+    let (ea, eb) = (la.pump(800), lb.pump(800));
+    assert!(seqs(&ea).is_empty(), "old device stops getting audio");
+    assert!(seqs(&eb).len() > 30, "asking device streams: {}", seqs(&eb).len());
+    assert_eq!(states(&ea).last(), Some(&false));
+    assert!(std::fs::read_to_string(dir.join(".config/meshwav/active_peer")).unwrap().contains(&hex(&kb.public)), "the choice is remembered");
+
+    // and A can take it back the same way
+    la.send(&Message::PlayHere);
+    la.pump(200);
+    lb.pump(200);
+    let (ea, eb) = (la.pump(800), lb.pump(800));
+    assert!(seqs(&ea).len() > 30 && seqs(&eb).is_empty(), "A has the stream again");
+}
+
+#[test]
 fn chosen_receiver_survives_an_agent_restart() {
     let dir = workdir("remember");
     let port = free_port();

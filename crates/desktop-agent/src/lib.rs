@@ -234,6 +234,7 @@ impl Fleet {
         for s in self.sessions.iter_mut().filter(|s| s.online()) {
             s.send_keepalive(sock);
             s.send_control(&Message::ActiveState { active: Some(s.peer) == active }, sock);
+            s.send_control(&Message::PlayHereSupported, sock);
         }
     }
 }
@@ -747,6 +748,7 @@ pub fn run(args: Vec<String>) {
                     let Some(i) = f.sessions.iter().position(|s| s.addr == from) else { continue };
                     let is_active = Some(f.sessions[i].peer) == active;
                     let others_online = f.sessions.iter().enumerate().any(|(j, s)| j != i && s.online());
+                    let mut play_here = None;
                     let s = &mut f.sessions[i];
                     if let Ok((h, _)) = s.opener.open(d) {
                         if h.ptype == PacketType::Punch && !s.closed {
@@ -774,12 +776,28 @@ pub fn run(args: Vec<String>) {
                                         BYE.store(true, Ordering::SeqCst);
                                     }
                                     info!("receiver '{}' said goodbye", s.name);
+                                } else if matches!(msg, Message::PlayHere) {
+                                    // Sealed with this receiver's session key, so only a paired device gets here.
+                                    if !s.closed {
+                                        play_here = Some((s.peer, s.name.clone()));
+                                    }
                                 } else if s.closed || !is_active {
                                     // A standby receiver must not retune the shared encoder; it can ask again once active.
                                 } else if let Some(reply) = s.ctl.on_message(msg) {
                                     s.send_control(&reply, &sock);
                                 }
                             }
+                        }
+                    }
+                    if let Some((key, name)) = play_here {
+                        // Same as `meshwav use`: remembered until someone chooses otherwise.
+                        match store::save_preferred(&f.preferred_path, Some(&key)) {
+                            Ok(()) => {
+                                f.preferred = Some(key);
+                                f.update(&sock);
+                                info!("receiver '{name}' asked for the audio");
+                            }
+                            Err(e) => warn!("receiver '{name}' asked for the audio, but the choice could not be saved: {e}"),
                         }
                     }
                 }

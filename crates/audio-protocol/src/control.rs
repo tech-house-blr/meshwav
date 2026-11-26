@@ -49,6 +49,11 @@ pub enum Message {
     /// stage at agent-clock time `t_us` (microseconds on the clock `Pong.t_us` reports). Sent about twice a
     /// second to the active receiver, so it can turn clock-offset + sample clock into a per-frame delay.
     TimeRef { ts: u32, t_us: u64 },
+    /// Receiver asks the agent to send it the audio, and to keep doing so (same as `meshwav use`).
+    PlayHere,
+    /// Agent tells receivers it understands `PlayHere`. Repeated with the keepalive, so a receiver only offers
+    /// the action to agents that support it. Older receivers fail to decode it and ignore it.
+    PlayHereSupported,
 }
 
 pub const REJECT_BITRATE: u8 = 1;
@@ -143,6 +148,8 @@ impl Message {
             Message::ConfigRejected { req, reason } => { w.u8(13); w.u16(*req); w.u8(*reason); }
             Message::ActiveState { active } => { w.u8(14); w.u8(*active as u8); }
             Message::TimeRef { ts, t_us } => { w.u8(15); w.u32(*ts); w.u64(*t_us); }
+            Message::PlayHere => w.u8(16),
+            Message::PlayHereSupported => w.u8(17),
         }
         let len = (w.0.len() - 2) as u16;
         w.0[0..2].copy_from_slice(&len.to_be_bytes());
@@ -171,6 +178,8 @@ impl Message {
             13 => Message::ConfigRejected { req: r.u16()?, reason: r.u8()? },
             14 => Message::ActiveState { active: match r.u8()? { 0 => false, 1 => true, _ => return Err(ProtocolError::BadControl("bad bool")) } },
             15 => Message::TimeRef { ts: r.u32()?, t_us: r.u64()? },
+            16 => Message::PlayHere,
+            17 => Message::PlayHereSupported,
             _ => return Err(ProtocolError::BadControl("unknown type")),
         };
         if !r.0.is_empty() { return Err(ProtocolError::BadControl("trailing bytes")) }
