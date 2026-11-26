@@ -88,6 +88,16 @@ impl Duck {
             match &self.saved {
                 None => self.engage(),
                 Some(s) => {
+                    // The default output changed (headphones to speakers, say): give the old one its
+                    // volume back and silence the new one, or the PC would play out loud.
+                    if let Ok((now_id, _)) = default_device() {
+                        if now_id != s.device_id {
+                            info!("redirect: the default output changed");
+                            self.release();
+                            self.engage();
+                            return;
+                        }
+                    }
                     // Keep it silent if a volume key or app raised it again.
                     if let Ok(v) = device_by_id(&s.device_id) {
                         if level(&v).map(|l| l > 0.0).unwrap_or(false) {

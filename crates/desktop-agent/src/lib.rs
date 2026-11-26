@@ -18,6 +18,8 @@ mod log;
 mod config;
 #[cfg(windows)]
 mod capture_windows;
+#[cfg(windows)]
+mod process_loopback_windows;
 mod control;
 mod fleet;
 mod invite;

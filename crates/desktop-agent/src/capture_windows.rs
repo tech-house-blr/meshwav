@@ -1,4 +1,5 @@
-//! System-audio capture on Windows: WASAPI loopback of the default output, through `cpal`.
+//! System-audio capture on Windows. Preferably a per-process loopback of every app (see
+//! `process_loopback_windows`); where that is unavailable, WASAPI loopback of the default output, through `cpal`.
 //!
 //! The sender reads fixed-size frames of 48 kHz stereo s16le, as `parec` gives them on Linux. Here the
 //! device's own mix format (any rate, any channel count) is converted into that. Loopback delivers
@@ -8,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::collections::VecDeque;
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,10 @@ struct Shared {
     q: Mutex<VecDeque<u8>>,
     ready: Condvar,
     stop: AtomicBool,
+    /// Bytes the loopback has delivered so far (for the debug log).
+    got: AtomicU64,
+    /// Loudest sample (as 0..32767) since the last debug report.
+    peak: AtomicU64,
 }
 
 pub struct Loopback {
@@ -119,45 +124,120 @@ where
         tmp.extend(data.iter().map(|s| s.to_sample::<f32>()));
         bytes.clear();
         conv.push(&tmp, &mut bytes);
-        let mut q = shared.q.lock().unwrap();
-        q.extend(bytes.iter());
-        let over = q.len().saturating_sub(MAX_BYTES);
-        if over > 0 {
-            q.drain(..over - over % 4);
-        }
-        drop(q);
-        shared.ready.notify_all();
+        shared.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let pk = tmp.iter().fold(0f32, |m, v| m.max(v.abs())) * 32767.0;
+        shared.peak.fetch_max(pk as u64, Ordering::Relaxed);
+        push(&shared, &bytes);
     }
+}
+
+/// Queue captured audio for `read`, dropping the oldest if the sender has fallen behind.
+fn push(shared: &Shared, bytes: &[u8]) {
+    let mut q = shared.q.lock().unwrap();
+    q.extend(bytes.iter());
+    let over = q.len().saturating_sub(MAX_BYTES);
+    if over > 0 {
+        q.drain(..over - over % 4);
+    }
+    drop(q);
+    shared.ready.notify_all();
+}
+
+/// How often the capture thread looks at which output is the default.
+const FOLLOW_EVERY: Duration = Duration::from_secs(1);
+
+/// Open a loopback capture of `dev`, feeding `shared`.
+fn open_stream(dev: &cpal::Device, shared: &Arc<Shared>) -> Result<cpal::Stream, String> {
+    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+    let conv = Convert { ch: cfg.channels() as usize, step: cfg.sample_rate().0 as f64 / 48_000.0, t: 0.0, prev: [0.0; 2] };
+    let err = |e| eprintln!("audio capture error: {e}");
+    // Building an input stream on an output device is how cpal asks WASAPI for loopback.
+    let stream = match cfg.sample_format() {
+        SampleFormat::F32 => dev.build_input_stream(&cfg.config(), feed::<f32>(shared.clone(), conv), err, None),
+        SampleFormat::I16 => dev.build_input_stream(&cfg.config(), feed::<i16>(shared.clone(), conv), err, None),
+        SampleFormat::I32 => dev.build_input_stream(&cfg.config(), feed::<i32>(shared.clone(), conv), err, None),
+        f => return Err(format!("unsupported sample format {f:?}")),
+    }
+    .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(stream)
 }
 
 impl Loopback {
     pub fn start() -> Result<Self, String> {
-        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false), got: AtomicU64::new(0), peak: AtomicU64::new(0) });
         let (tx, rx) = mpsc::channel::<Result<(), String>>();
         let s = shared.clone();
         let thread = std::thread::spawn(move || {
-            let built = (|| -> Result<cpal::Stream, String> {
-                let dev = cpal::default_host().default_output_device().ok_or("no audio output device to capture")?;
-                let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
-                let ch = cfg.channels() as usize;
-                let conv = Convert { ch, step: cfg.sample_rate().0 as f64 / 48_000.0, t: 0.0, prev: [0.0; 2] };
-                let err = |e| eprintln!("audio capture error: {e}");
-                // Building an input stream on an output device is how cpal asks WASAPI for loopback.
-                let stream = match cfg.sample_format() {
-                    SampleFormat::F32 => dev.build_input_stream(&cfg.config(), feed::<f32>(s.clone(), conv), err, None),
-                    SampleFormat::I16 => dev.build_input_stream(&cfg.config(), feed::<i16>(s.clone(), conv), err, None),
-                    SampleFormat::I32 => dev.build_input_stream(&cfg.config(), feed::<i32>(s.clone(), conv), err, None),
-                    f => return Err(format!("unsupported sample format {f:?}")),
+            // Preferred: everything the apps play, before any output's volume (see process_loopback_windows).
+            match crate::process_loopback_windows::open() {
+                Ok(cap) => {
+                    let _ = tx.send(Ok(()));
+                    info!("capturing the audio of every app, whichever output it plays on (per-process loopback)");
+                    let (mut bytes, mut last_report, mut last_got) = (Vec::new(), Instant::now(), 0u64);
+                    while !s.stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(5));
+                        bytes.clear();
+                        let pk = cap.drain(&mut bytes);
+                        if !bytes.is_empty() {
+                            s.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                            s.peak.fetch_max(pk as u64, Ordering::Relaxed);
+                            push(&s, &bytes);
+                        }
+                        if last_report.elapsed() >= Duration::from_secs(10) {
+                            let g = s.got.load(Ordering::Relaxed);
+                            debug!("capture: {} bytes in the last 10 s, loudest sample {}", g - last_got, s.peak.swap(0, Ordering::Relaxed));
+                            last_got = g;
+                            last_report = Instant::now();
+                        }
+                    }
+                    return;
                 }
-                .map_err(|e| e.to_string())?;
-                stream.play().map_err(|e| e.to_string())?;
-                Ok(stream)
+                Err(e) => warn!("per-process capture is not available ({e}); capturing the default output instead"),
+            }
+            let host = cpal::default_host();
+            let built = (|| -> Result<(cpal::Stream, String), String> {
+                let dev = host.default_output_device().ok_or("no audio output device to capture")?;
+                let name = dev.name().unwrap_or_default();
+                Ok((open_stream(&dev, &s)?, name))
             })();
             match built {
-                Ok(stream) => {
+                Ok((mut stream, mut name)) => {
                     let _ = tx.send(Ok(()));
+                    let (mut last_check, mut failed_for) = (Instant::now(), String::new());
+                    let (mut last_report, mut last_got) = (Instant::now(), 0u64);
                     while !s.stop.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(50));
+                        if last_report.elapsed() >= Duration::from_secs(10) {
+                            let g = s.got.load(Ordering::Relaxed);
+                            debug!("capture: {} bytes from {name} in the last 10 s, loudest sample {}", g - last_got, s.peak.swap(0, Ordering::Relaxed));
+                            last_got = g;
+                            last_report = Instant::now();
+                        }
+                        if last_check.elapsed() < FOLLOW_EVERY {
+                            continue;
+                        }
+                        last_check = Instant::now();
+                        // Follow the default output: capture the one that is playing now.
+                        let Some(dev) = host.default_output_device() else { continue };
+                        let now_name = dev.name().unwrap_or_default();
+                        if now_name == name {
+                            continue;
+                        }
+                        match open_stream(&dev, &s) {
+                            Ok(new) => {
+                                info!("capturing from the new default output: {now_name} (was {name})");
+                                stream = new; // the old stream is dropped here
+                                name = now_name;
+                                failed_for.clear();
+                            }
+                            Err(e) => {
+                                if failed_for != now_name {
+                                    warn!("cannot capture the new default output {now_name} ({e}); staying on {name}");
+                                    failed_for = now_name;
+                                }
+                            }
+                        }
                     }
                     drop(stream);
                 }
