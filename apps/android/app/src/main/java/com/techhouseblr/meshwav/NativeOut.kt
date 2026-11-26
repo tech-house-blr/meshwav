@@ -14,6 +14,10 @@ object NativeOut {
     external fun stalls(): Int
     /** Longest time between two writes since the stream started, in ms. */
     external fun maxGapMs(): Int
+    /** Writes more than 20 ms after the previous one. */
+    external fun lateWrites(): Int
+    /** Stalls that happened right after such a late write (the app fed the stream late). */
+    external fun lateStalls(): Int
     external fun bufferMs(): Int
     external fun close()
 }

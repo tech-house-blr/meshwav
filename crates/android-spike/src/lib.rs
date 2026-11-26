@@ -275,6 +275,16 @@ mod jni_api {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_lateWrites(_: JNIEnv, _: JClass) -> jint {
+        cur_out().map(|o| o.late_writes()).unwrap_or(0)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_lateStalls(_: JNIEnv, _: JClass) -> jint {
+        cur_out().map(|o| o.late_stalls()).unwrap_or(0)
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_com_techhouseblr_meshwav_NativeOut_maxGapMs(_: JNIEnv, _: JClass) -> jint {
         cur_out().map(|o| o.max_gap_ms()).unwrap_or(0)
     }

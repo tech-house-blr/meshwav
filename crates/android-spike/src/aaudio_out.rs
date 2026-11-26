@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 const RATE: i64 = 48_000;
 const START_BURSTS: i32 = 4;
 const WRITE_TIMEOUT: Duration = Duration::from_millis(200);
+const LATE_WRITE_NS: i64 = 20_000_000;
 const SHRINK_AFTER_NS: i64 = 60_000_000_000;
 
 extern "C" {
@@ -37,6 +38,8 @@ pub struct Out {
     // whether the app stopped feeding the stream or Android stopped reading it.
     stalls: AtomicI32,
     max_gap_ns: AtomicI64,
+    late_writes: AtomicI32,
+    late_stalls: AtomicI32,
     last_write_ns: AtomicI64,
     last_change_ns: AtomicI64,
 }
@@ -79,6 +82,8 @@ impl Out {
             first: AtomicI32::new(1),
             stalls: AtomicI32::new(0),
             max_gap_ns: AtomicI64::new(0),
+            late_writes: AtomicI32::new(0),
+            late_stalls: AtomicI32::new(0),
             last_write_ns: AtomicI64::new(0),
             last_change_ns: AtomicI64::new(now_ns()),
         })
@@ -97,8 +102,13 @@ impl Out {
     pub fn write(&self, pcm: &[u8]) -> i32 {
         let t0 = now_ns();
         let prev = self.last_write_ns.swap(t0, Ordering::Relaxed);
-        if prev > 0 {
-            self.max_gap_ns.fetch_max(t0 - prev, Ordering::Relaxed);
+        let gap = if prev > 0 { t0 - prev } else { 0 };
+        if gap > 0 {
+            self.max_gap_ns.fetch_max(gap, Ordering::Relaxed);
+        }
+        let late = gap > LATE_WRITE_NS;
+        if late {
+            self.late_writes.fetch_add(1, Ordering::Relaxed);
         }
         let total = pcm.len() / 4;
         let mut done = 0usize;
@@ -116,11 +126,11 @@ impl Out {
                 return -1;
             }
         }
-        self.after_write();
+        self.after_write(late);
         done as i32
     }
 
-    fn after_write(&self) {
+    fn after_write(&self, late: bool) {
         let x = self.stream.x_run_count();
         if self.first.swap(0, Ordering::Relaxed) == 1 {
             // Underruns before the first data arrived are not the stream's fault.
@@ -133,6 +143,9 @@ impl Out {
         let cap = self.stream.buffer_capacity_in_frames();
         if x > self.last_xruns.swap(x, Ordering::Relaxed) {
             self.stalls.fetch_add(1, Ordering::Relaxed);
+            if late {
+                self.late_stalls.fetch_add(1, Ordering::Relaxed);
+            }
             self.last_change_ns.store(now, Ordering::Relaxed);
             let _ = self.stream.set_buffer_size_in_frames((cur + self.burst).min(cap));
         } else if cur > self.start && now - self.last_change_ns.load(Ordering::Relaxed) > SHRINK_AFTER_NS {
@@ -164,6 +177,15 @@ impl Out {
     /// Longest time between two writes since the stream started, in ms.
     pub fn max_gap_ms(&self) -> i32 {
         (self.max_gap_ns.load(Ordering::Relaxed) / 1_000_000) as i32
+    }
+
+    /// Writes that came more than 20 ms after the previous one, and stalls that happened right after such a write.
+    pub fn late_writes(&self) -> i32 {
+        self.late_writes.load(Ordering::Relaxed)
+    }
+
+    pub fn late_stalls(&self) -> i32 {
+        self.late_stalls.load(Ordering::Relaxed)
     }
 
     pub fn buffer_ms(&self) -> i32 {
