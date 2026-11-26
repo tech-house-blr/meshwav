@@ -43,6 +43,7 @@ object Stats {
     @Volatile var lossless = false
     @Volatile var qualityNote = ""   // e.g. why lossless was dropped
     @Volatile var output = ""        // what Android actually granted for playback
+    @Volatile var canPlayHere = false // the agent said it can switch the audio to this device on request
     @Volatile var standby = false    // the agent sends audio to another of your receivers
     // End-to-end delay, smoothed, from the agent's capture stamps. -1 = not measured (yet, or the agent is too old).
     @Volatile var e2eMs = -1.0
@@ -54,7 +55,7 @@ object Stats {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
         decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0; trackStalls = -1; trackMaxGapMs = -1; trackLateWrites = -1; trackLateStalls = -1; recvLateGaps = 0; recvMaxGapMs = 0
-        agentName = ""; kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
+        agentName = ""; kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false; canPlayHere = false
         e2eMs = -1.0; e2eNetMs = 0.0; e2eBufMs = 0.0; e2eErrMs = -1.0
     }
 }
@@ -135,6 +136,21 @@ class StreamReceiver(
         threads.clear()
         live = null
         if (!Stats.state.contains("error", ignoreCase = true)) Stats.state = "Idle"
+    }
+
+    /** Ask the agent to send the audio here and keep doing so. Sent 3 times (UDP), off the caller's thread. */
+    fun playHere() {
+        val l = live ?: return
+        val sock = socket ?: return
+        Thread {
+            try {
+                repeat(3) {
+                    val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ControlWire.encodePlayHere())
+                    sock.send(DatagramPacket(d, d.size))
+                    Thread.sleep(200)
+                }
+            } catch (_: Exception) {}
+        }.start()
     }
 
     /** Tell the agent we are leaving so it restores the PC's audio output now. Sent 3 times (UDP), off the caller's thread. */
@@ -350,6 +366,8 @@ class StreamReceiver(
                         Stats.e2eErrMs = if (l.clock.errorUs < 0) -1.0 else l.clock.errorUs / 1000.0
                     } else if (m is ControlWire.Msg.TimeRef) {
                         l.clock.onTimeRef(m.ts, m.agentUs)
+                    } else if (m is ControlWire.Msg.PlayHereSupported) {
+                        Stats.canPlayHere = true
                     } else if (m is ControlWire.Msg.Active) {
                         if (!m.active) {
                             Stats.standby = true

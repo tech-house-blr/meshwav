@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var pairBtn: Button
     private var invites: InviteListener? = null
     private lateinit var action: Button
+    private lateinit var playHereBtn: Button
     private lateinit var status: TextView
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
@@ -122,6 +123,8 @@ class MainActivity : Activity() {
         recvMain.addView(title); recvMain.addView(subtitle); recvMain.addView(status)
         action = Ui.button(this, "Start receiving", true) { toggle() }
         recvMain.addView(action, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
+        playHereBtn = Ui.button(this, "Play here", true) { PlaybackService.playHere?.invoke() }
+        recvMain.addView(playHereBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
         sendersLabel = Ui.section(this, "Senders")
         recvMain.addView(sendersLabel)
         sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -447,10 +450,11 @@ class MainActivity : Activity() {
         subtitle.text = when {
             store.all().isEmpty() -> "Pair a sender to start receiving."
             !running -> "Not receiving."
-            word == "Standby" -> "The sender is playing on another device. Choose this one on the sender."
+            word == "Standby" -> if (Stats.canPlayHere) "The sender is playing on another device. Tap Play here to move it to this phone." else "The sender is playing on another device. Choose this one on the sender."
             word == "Waiting for audio" -> "Nothing is playing on the sender."
             else -> "from ${act?.label ?: "Sender"}"
         }
+        playHereBtn.visibility = if (running && word == "Standby" && Stats.canPlayHere) View.VISIBLE else View.GONE
         action.visibility = if (store.all().isEmpty()) View.GONE else View.VISIBLE
         action.text = if (running) "Stop receiving" else "Start receiving"
         Ui.restyle(action, !running)

@@ -18,6 +18,8 @@ class PlaybackService : Service() {
         @Volatile var running = false
         /** The user pressed Disconnect or Stop: do not reconnect by itself until they ask again. */
         @Volatile var userStopped = false
+        /** Asks the running receiver to take the audio from the sender; null while nothing is running. */
+        @Volatile var playHere: (() -> Unit)? = null
     }
 
     private var receiver: StreamReceiver? = null
@@ -64,13 +66,14 @@ class PlaybackService : Service() {
             applicationContext,
             onPaired = { store.savePaired(host, port, agentPk, makeDefault = code != null); store.setName(pkHex, Stats.agentName) },
             onName = { store.setName(pkHex, it) },
-        ).also { it.start() }
+        ).also { r -> r.start(); playHere = { r.playHere() } }
         if (code == null) store.savePaired(host, port, agentPk) // already paired: keep it current
         running = true
         return START_STICKY
     }
 
     private fun teardown() {
+        playHere = null
         receiver?.stop(); receiver = null
         wake?.let { if (it.isHeld) it.release() }; wifi?.let { if (it.isHeld) it.release() }
         running = false

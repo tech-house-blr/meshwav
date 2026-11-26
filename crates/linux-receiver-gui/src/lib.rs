@@ -476,7 +476,8 @@ fn headline(running: bool, s: &Snapshot) -> (&'static str, Color32, String) {
         return ("Stopped", MUTED, "Not connected to the sender.".into());
     }
     if s.standby {
-        return ("Standby", WARN, "The sender is playing on another device. Choose this one on the sender.".into());
+        let how = if s.can_play_here { "Tap Play here to move it to this device." } else { "Choose this one on the sender." };
+        return ("Standby", WARN, format!("The sender is playing on another device. {how}"));
     }
     match s.state.as_str() {
         "Playing" => ("Playing", ACCENT, String::new()),
@@ -805,6 +806,14 @@ impl App {
             self.volume.set(self.slider);
         }
         ui.add_space(18.0);
+        if running && snap.standby && snap.can_play_here {
+            if ui.add(primary("Play here").min_size(egui::vec2(160.0, 36.0))).clicked() {
+                if let Some(w) = &self.worker {
+                    w.status.play_here();
+                }
+            }
+            ui.add_space(8.0);
+        }
         if running {
             if ui.add(egui::Button::new("Stop receiving").min_size(egui::vec2(160.0, 36.0))).clicked() {
                 self.stop();

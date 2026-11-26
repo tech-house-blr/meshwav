@@ -45,6 +45,8 @@ pub struct Snapshot {
     pub jitter_ms: f64,
     /// The connected sender's own name (empty until connected, or if it sends none).
     pub sender_name: String,
+    /// The sender said it can switch the audio to this device on request.
+    pub can_play_here: bool,
 }
 
 /// Live state for the UI or the log; cheap to read from any thread.
@@ -54,6 +56,8 @@ pub struct Status {
     want_lossless: std::sync::atomic::AtomicBool,
     /// The last `SetConfig` request the agent answered (applied or refused).
     cfg_ack: std::sync::atomic::AtomicU16,
+    /// Copies of `PlayHere` still to send (UDP, so a few).
+    play_here_left: std::sync::atomic::AtomicU8,
 }
 
 impl Status {
@@ -63,6 +67,11 @@ impl Status {
     /// Ask the agent for lossless PCM (`true`) or Opus (`false`). Applies live and is repeated after a reconnect.
     pub fn set_lossless(&self, on: bool) {
         self.want_lossless.store(on, Ordering::Relaxed);
+    }
+    /// Ask the sender to send the audio to this device and keep doing so. Only meaningful once
+    /// `Snapshot::can_play_here` is set.
+    pub fn play_here(&self) {
+        self.play_here_left.store(3, Ordering::Relaxed);
     }
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.snap.lock().unwrap());
@@ -222,7 +231,10 @@ fn establish(s: &Settings, status: &Status, stop: &AtomicBool) -> Result<Conn, S
         match connect(s, None, stop) {
             Ok(c) => {
                 let n = c.peer_name.clone();
-                status.update(|x| x.sender_name = n);
+                status.update(|x| {
+                    x.sender_name = n;
+                    x.can_play_here = false;
+                });
                 return Ok(c);
             }
             Err(Hs::Fatal(m)) => return Err(m),
@@ -338,7 +350,7 @@ fn punch_loop(sh: &Shared) {
     let mut errors = 0;
     // Codec requests: a new series starts when the wish changes or the connection is rebuilt, and runs
     // until the agent answers it (or 10 tries), so a sender that refuses is not asked forever.
-    let (mut want_seen, mut req, mut tries, mut cfg_next) = (false, 0u16, 0u32, 0u64);
+    let (mut want_seen, mut req, mut tries, mut cfg_next, mut play_next) = (false, 0u16, 0u32, 0u64, 0u64);
     while !sh.stop.load(Ordering::Relaxed) {
         let live = sh.live.lock().unwrap().clone();
         if let Some(l) = live {
@@ -363,6 +375,11 @@ fn punch_loop(sh: &Shared) {
                 let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &m.encode()));
                 tries += 1;
                 cfg_next = now + 500;
+            }
+            if sh.status.play_here_left.load(Ordering::Relaxed) > 0 && now >= play_next {
+                sh.status.play_here_left.fetch_sub(1, Ordering::Relaxed);
+                let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &Message::PlayHere.encode()));
+                play_next = now + 200;
             }
             if now >= next {
                 match l.punch() {
@@ -454,6 +471,11 @@ fn recv_loop(sh: &Shared, s: &Settings) -> Result<(), String> {
                         sh.status.update(|x| x.note = "The sender refused the codec change".into());
                     }
                     _ => {}
+                }
+                if let Ok(Some((Message::PlayHereSupported, _))) = Message::decode(&payload) {
+                    if !sh.status.snapshot().can_play_here {
+                        sh.status.update(|x| x.can_play_here = true);
+                    }
                 }
                 if let Ok(Some((Message::ActiveState { active }, _))) = Message::decode(&payload) {
                     if !active {

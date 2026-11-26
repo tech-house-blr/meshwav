@@ -26,6 +26,8 @@ object ControlWire {
     const val TYPE_CONFIG_APPLIED = 12
     const val TYPE_CONFIG_REJECTED = 13
     const val TYPE_ACTIVE_STATE = 14
+    const val TYPE_PLAY_HERE = 16
+    const val TYPE_PLAY_HERE_SUPPORTED = 17
     const val REJECT_BITRATE = 1
     const val REJECT_FRAME = 2
     const val REJECT_ENCODER = 3
@@ -44,6 +46,8 @@ object ControlWire {
         data class Rejected(val req: Int, val reason: Int) : Msg()
         /** The agent says whether this device is the one getting audio (true) or is on standby (false). */
         data class Active(val active: Boolean) : Msg()
+        /** The agent can switch the audio to this device when asked. */
+        object PlayHereSupported : Msg()
         /** Answer to our Ping: our own send time echoed, and the agent's clock (microseconds) when it answered. */
         data class Pong(val echoUs: Long, val agentUs: Long) : Msg()
         /** The audio frame stamped `ts` was captured at agent-clock time `agentUs`. */
@@ -54,6 +58,9 @@ object ControlWire {
     fun encodePing(tUs: Long): ByteArray = ByteBuffer.allocate(2 + 1 + 8).putShort(9).put(TYPE_PING.toByte()).putLong(tUs).array()
 
     /** Goodbye: tells the agent to stop and give the PC's audio output back at once. */
+    /** Ask the agent to send the audio to this device and keep doing so. */
+    fun encodePlayHere(): ByteArray = ByteBuffer.allocate(3).putShort(1).put(TYPE_PLAY_HERE.toByte()).array()
+
     fun encodeBye(): ByteArray = ByteBuffer.allocate(4).putShort(2).put(TYPE_BYE.toByte()).put(0).array()
 
     fun encodeSetConfig(req: Int, kbps: Int, frameMs: Int, codec: Int = 0): ByteArray {
@@ -72,6 +79,7 @@ object ControlWire {
             TYPE_CONFIG_APPLIED -> if (len == 9) Msg.Applied(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null
             TYPE_CONFIG_REJECTED -> if (len == 4) Msg.Rejected(b.short.toInt() and 0xffff, b.get().toInt() and 0xff) else null
             TYPE_ACTIVE_STATE -> if (len == 2) when (b.get().toInt() and 0xff) { 0 -> Msg.Active(false); 1 -> Msg.Active(true); else -> null } else null
+            TYPE_PLAY_HERE_SUPPORTED -> if (len == 1) Msg.PlayHereSupported else null
             TYPE_PONG -> if (len == 17) Msg.Pong(b.long, b.long) else null
             TYPE_TIME_REF -> if (len == 13) Msg.TimeRef(b.int.toLong() and 0xffffffffL, b.long) else null
             TYPE_SET_CONFIG -> if (len == 9) Msg.SetConfig(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null

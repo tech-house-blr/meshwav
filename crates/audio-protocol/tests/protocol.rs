@@ -198,6 +198,8 @@ fn samples() -> Vec<Message> {
         Message::ActiveState { active: true },
         Message::ActiveState { active: false },
         Message::TimeRef { ts: u32::MAX, t_us: u64::MAX },
+        Message::PlayHere,
+        Message::PlayHereSupported,
         Message::Ping { t_us: 12345 },
         Message::Pong { echo_us: 1, t_us: 2 },
     ]
@@ -332,9 +334,18 @@ fn runtime_config_messages_have_fixed_wire_bytes() {
     assert_eq!(hex(Message::Ping { t_us: 0x0102030405060708 }), "0009060102030405060708");
     assert_eq!(hex(Message::Pong { echo_us: 1, t_us: 2 }), "00110700000000000000010000000000000002");
     assert_eq!(hex(Message::TimeRef { ts: 300, t_us: 0x0102030405060708 }), "000d0f0000012c0102030405060708");
+    assert_eq!(hex(Message::PlayHere), "000110");
+    assert_eq!(hex(Message::PlayHereSupported), "000111");
 }
 
 #[test]
 fn active_state_rejects_non_bool() {
     assert!(Message::decode(&[0, 2, 14, 2]).is_err());
+}
+
+#[test]
+fn play_here_carries_no_payload() {
+    // A byte after the type is trailing garbage, so a peer cannot smuggle data through it.
+    assert!(Message::decode(&[0, 2, 16, 0]).is_err());
+    assert!(Message::decode(&[0, 2, 17, 0]).is_err());
 }

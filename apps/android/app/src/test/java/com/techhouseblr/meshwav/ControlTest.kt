@@ -29,6 +29,9 @@ class ControlTest {
         assertEquals("0009060102030405060708", ControlWire.encodePing(0x0102030405060708).hex())
         assertEquals(ControlWire.Msg.Active(true), ControlWire.decode(hex("00020e01")))
         assertEquals(ControlWire.Msg.Active(false), ControlWire.decode(hex("00020e00")))
+        assertEquals(ControlWire.Msg.PlayHereSupported, ControlWire.decode(hex("000111")))
+        assertNull(ControlWire.decode(hex("00021100")))
+        assertEquals("000110", ControlWire.encodePlayHere().joinToString("") { "%02x".format(it) })
         assertNull(ControlWire.decode(hex("00020e02")))      // not a bool
         assertNull(ControlWire.decode(hex("00030e0100")))    // wrong length
         assertNull(ControlWire.decode(hex("00010e")))
