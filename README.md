@@ -17,7 +17,7 @@
 
 Meshwav streams a device's audio to another device you own. A Linux or Windows computer or an Android phone can **send** (everything it plays), and a Linux or Windows computer or an Android phone can **receive** and play it. Devices find each other on your tailnet, pair once with a six-digit code, and from then on audio is encrypted end to end. Several receivers can be paired; exactly one plays at a time and you choose which.
 
-> **Status: stable.** It works end to end on a real tailnet. The end-to-end latency target is only met with the optional native Android output, which is off by default and was tested on two phones (see [Performance](#performance)). The Windows build is new. The security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
+> **Status: pre-1.0, still being tested.** It works end to end on a real tailnet. The end-to-end latency target is only met with the optional native Android output, which is off by default and was tested on two phones (see [Performance](#performance)). The Windows build is new. The security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
 
 ## Features
 
