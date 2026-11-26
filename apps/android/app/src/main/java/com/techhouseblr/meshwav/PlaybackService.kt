@@ -62,7 +62,8 @@ class PlaybackService : Service() {
         receiver = StreamReceiver(
             host, port, store.identityPrivate(), agentPk, code, android.os.Build.MODEL ?: "Android",
             applicationContext,
-            onPaired = { store.savePaired(host, port, agentPk, makeDefault = code != null) },
+            onPaired = { store.savePaired(host, port, agentPk, makeDefault = code != null); store.setName(pkHex, Stats.agentName) },
+            onName = { store.setName(pkHex, it) },
         ).also { it.start() }
         if (code == null) store.savePaired(host, port, agentPk) // already paired: keep it current
         running = true
