@@ -318,7 +318,6 @@ impl SendPanel {
             ui.add_space(4.0);
             ui.separator();
         }
-        self.settings_ui(ui);
         if let Some((m, bad)) = &self.message {
             ui.add_space(6.0);
             ui.label(RichText::new(m).color(if *bad { BAD } else { MUTED }));
@@ -442,8 +441,9 @@ impl SendPanel {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(RichText::new("Settings").color(MUTED)).id_salt("send-settings").show(ui, |ui| {
+    /// The sender's settings, for the Settings tab.
+    pub fn settings_body(&mut self, ui: &mut egui::Ui) {
+        {
             ui.label(RichText::new("Default quality").color(MUTED));
             ui.horizontal(|ui| {
                 choice(ui, &mut self.lossless, false, "Opus");
@@ -472,7 +472,7 @@ impl SendPanel {
             if ui.button(label).clicked() {
                 self.apply_settings();
             }
-        });
+        }
     }
 }
 

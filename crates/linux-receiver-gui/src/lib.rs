@@ -197,12 +197,19 @@ struct App {
     agent_name: String,
     /// In a narrow window: showing the sender's details page instead of the main view.
     detail_open: bool,
+    /// The Settings tab is showing (the mode underneath is unchanged).
+    settings: bool,
+    /// Closing the window hides it to the tray instead of quitting.
+    background: bool,
 }
 
 fn device_path(dir: &std::path::Path) -> PathBuf {
     dir.join("output")
 }
 
+fn background_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("background")
+}
 fn mode_path(dir: &std::path::Path) -> PathBuf {
     dir.join("mode")
 }
@@ -227,6 +234,7 @@ impl App {
         let start_volume = std::fs::read_to_string(volume_path(&dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100u32).min(100);
         let lossless = std::fs::read_to_string(quality_path(&dir)).map(|s| s.trim() == "lossless").unwrap_or(false);
         let agent_name = store::load_agent_name(&dir).unwrap_or_default();
+        let dir_for_bg = dir.clone();
         let mut app = App {
             dir,
             name: store::host_name(),
@@ -248,6 +256,8 @@ impl App {
             send: send::SendPanel::new(&base),
             agent_name,
             detail_open: false,
+            settings: false,
+            background: std::fs::read_to_string(background_path(&dir_for_bg)).is_ok_and(|t| t.trim() == "on"),
         };
         app.mode = std::fs::read_to_string(mode_path(&app.dir)).ok().and_then(|m| match m.trim() {
             "send" => Some(Mode::Send),
@@ -488,6 +498,7 @@ impl eframe::App for App {
         while let Ok(c) = self.tray_cmds.try_recv() {
             match c {
                 TrayCmd::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
@@ -495,6 +506,12 @@ impl eframe::App for App {
             }
         }
         self.sync_tray();
+        // With "keep running in the tray" on, the close button hides the window. Without a tray
+        // there would be no way back, so the window closes as usual.
+        if self.background && self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(hide_command());
+        }
         // A paste (Ctrl+V or the Paste button) on the pairing screen goes into the link field even if it is not focused.
         if self.mode == Mode::Receive && self.paired.is_none() && self.pairing.is_none() {
             let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None }));
@@ -510,14 +527,23 @@ impl eframe::App for App {
                 ui.add_space(14.0);
                 let mut to = self.mode;
                 for (m, label) in [(Mode::Receive, "Receive"), (Mode::Send, "Send")] {
-                    let t = if to == m { RichText::new(label).color(ACCENT_INK) } else { RichText::new(label) };
-                    ui.selectable_value(&mut to, m, t);
+                    let on = to == m && !self.settings;
+                    let t = if on { RichText::new(label).color(ACCENT_INK) } else { RichText::new(label) };
+                    if ui.selectable_label(on, t).clicked() {
+                        self.settings = false;
+                        to = m;
+                    }
+                }
+                let t = if self.settings { RichText::new("Settings").color(ACCENT_INK) } else { RichText::new("Settings") };
+                if ui.selectable_label(self.settings, t).clicked() {
+                    self.settings = true;
                 }
                 self.switch_mode(to);
             });
             ui.separator();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 match (self.mode, self.paired.clone()) {
+                    _ if self.settings => self.settings_screen(ui),
                     (Mode::Send, _) => self.send.ui(ui),
                     (Mode::Receive, None) => self.pairing_screen(ui),
                     (Mode::Receive, Some(p)) => self.main_screen(ui, &p),
@@ -557,131 +583,103 @@ impl App {
     }
 
     fn pairing_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Not paired with a sender yet.").color(MUTED));
-        ui.add_space(10.0);
-        ui.label("Start pairing on the sender (Send mode on the phone, or `meshwav pair` on a computer). It shows a 6-digit code and a key fingerprint. Type the code here, then confirm the fingerprint.");
-        ui.add_space(8.0);
         let busy = self.pairing.is_some();
+        ui.add_space(4.0);
+        ui.label(RichText::new("Connect a sender").size(34.0));
+        ui.label(RichText::new("Pair once. After that this computer plays whatever the sender plays.").color(MUTED));
+        ui.add_space(14.0);
+
+        let step = |ui: &mut egui::Ui, n: &str, text: &str| {
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new(n).color(ACCENT).strong().size(20.0));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new(text)).wrap());
+            });
+            ui.add_space(6.0);
+        };
+        step(ui, "1", "On the sender, open Send and tap Show pairing code. On a computer, run `meshwav pair`. It shows a 6-digit code and a key fingerprint.");
+        step(ui, "2", "Type the code here and press Pair.");
+        step(ui, "3", "Check that the fingerprint shown here is the same as on the sender, then confirm.");
+        ui.add_space(8.0);
+
         ui.add_enabled_ui(!busy, |ui| {
             ui.label(RichText::new("Pairing code").color(MUTED));
-            let r = ui.add(egui::TextEdit::singleline(&mut self.link).desired_width(180.0).hint_text("123456").font(egui::FontId::monospace(26.0)));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.link).desired_width(220.0).hint_text("123456").font(egui::FontId::monospace(30.0)));
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.link.trim().is_empty() {
                 self.begin_pairing();
             }
         });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         let mut answer: Option<bool> = None;
         if let Some(a) = self.pairing.as_ref().and_then(|p| p.asking.as_ref()) {
-            ui.separator();
-            ui.label(format!("Found a sender at {}. Its key fingerprint is", a.addr));
-            ui.label(RichText::new(&a.fingerprint).monospace().size(30.0).color(ACCENT));
-            ui.label("Does it match the fingerprint shown on the sender next to the code? If not, someone else on your network may be answering. Choose No.");
-            ui.horizontal(|ui| {
-                if ui.button("Yes, it matches").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("No, not this one").clicked() {
-                    answer = Some(false);
-                }
+            egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::same(14.0)).rounding(6.0).show(ui, |ui| {
+                ui.label(RichText::new("Found a sender").strong());
+                ui.label(RichText::new(format!("at {}", a.addr)).monospace().color(MUTED));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Key fingerprint").color(MUTED));
+                ui.label(RichText::new(&a.fingerprint).monospace().size(30.0).color(ACCENT));
+                ui.add(egui::Label::new("Does it match the fingerprint on the sender next to the code? If not, someone else on your network may be answering. Choose No.").wrap());
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add(primary("Yes, it matches")).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("No, not this one").clicked() {
+                        answer = Some(false);
+                    }
+                });
             });
-            ui.add_space(6.0);
+            ui.add_space(8.0);
         }
         if let (Some(yes), Some(p)) = (answer, self.pairing.as_mut()) {
             if let Some(a) = p.asking.take() {
                 let _ = a.reply.send(yes);
             }
         }
-        ui.horizontal(|ui| {
-            if busy {
-                if ui.button("Cancel").clicked() {
-                    if let Some(p) = self.pairing.take() {
-                        p.stop.store(true, Ordering::Relaxed);
-                    }
-                    self.message = None;
+        if busy {
+            if self.pairing.as_ref().is_some_and(|p| p.asking.is_none()) {
+                ui.label(RichText::new("Looking for the sender...").color(MUTED));
+            }
+            if ui.button("Cancel").clicked() {
+                if let Some(p) = self.pairing.take() {
+                    p.stop.store(true, Ordering::Relaxed);
                 }
-            } else if ui.add_enabled(!self.link.trim().is_empty(), egui::Button::new("Pair")).clicked() {
-                self.begin_pairing();
+                self.message = None;
             }
-        });
-    }
-
-    fn main_screen(&mut self, ui: &mut egui::Ui, p: &Paired) {
-        let snap = self.worker.as_ref().map(|w| w.status.snapshot()).unwrap_or_default();
-        if is_wide(ui.available_width()) {
-            let (left, right) = split(ui);
-            let mut l = pane(ui, left);
-            self.receive_main(&mut l, &snap, true);
-            let mut r = pane(ui, right);
-            self.receive_details(&mut r, p, &snap, false);
-            finish_panes(ui, &l, &r);
-        } else if self.detail_open {
-            self.receive_details(ui, p, &snap, true);
-        } else {
-            self.receive_main(ui, &snap, false);
+        } else if ui.add_enabled(!self.link.trim().is_empty(), primary("Pair")).clicked() {
+            self.begin_pairing();
         }
     }
 
-    /// The sender, its state, the volume and Start or Stop. Everything else is behind the sender's row.
-    fn receive_main(&mut self, ui: &mut egui::Ui, snap: &Snapshot, wide: bool) {
+    /// Everything that is a setting rather than something you do while listening or sending.
+    fn settings_screen(&mut self, ui: &mut egui::Ui) {
         let running = self.worker.is_some();
-        let (title, colour, detail) = headline(running, snap);
         ui.add_space(4.0);
-        ui.label(RichText::new(title).size(34.0).color(colour));
-        if !detail.is_empty() {
-            ui.label(RichText::new(detail).color(MUTED));
-        }
-        if running && !snap.standby && snap.state == "Playing" {
-            let codec = if snap.lossless { "Lossless PCM" } else { "Opus" };
-            ui.label(RichText::new(format!("{codec}, {} ms frames", snap.frame_ms)).color(MUTED));
-        }
-        ui.add_space(14.0);
-        ui.label(RichText::new("Sender").color(MUTED));
-        ui.add_space(2.0);
-        let name = sender_label(&self.agent_name);
-        if device_row(ui, &name, title, running && !snap.standby && snap.state == "Playing", wide).clicked() {
-            self.detail_open = true;
-        }
-        ui.add_space(14.0);
-        ui.label(RichText::new("Volume").color(MUTED));
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false));
-            if r.changed() {
-                self.volume.set(self.slider);
-            }
-            ui.label(RichText::new(format!("{:>3}%", self.slider)).monospace());
-        });
-        ui.add_space(12.0);
-        if running {
-            if ui.button("Stop receiving").clicked() {
-                self.stop();
-            }
-        } else if ui.add(primary("Resume receiving")).clicked() {
-            self.start();
-        }
-    }
+        ui.label(RichText::new("Settings").size(34.0));
+        ui.add_space(10.0);
 
-    /// What used to sit on the main screen: where the sender is, the output, the quality, the numbers.
-    fn receive_details(&mut self, ui: &mut egui::Ui, p: &Paired, snap: &Snapshot, page: bool) {
-        let running = self.worker.is_some();
-        if page && back_link(ui, "Back") {
-            self.detail_open = false;
+        ui.label(RichText::new("This app").color(MUTED));
+        let before = self.background;
+        ui.checkbox(&mut self.background, "Keep running in the tray when the window is closed");
+        if self.background != before {
+            let _ = std::fs::write(background_path(&self.dir), if self.background { "on" } else { "off" });
         }
-        ui.add_space(4.0);
-        ui.label(RichText::new(sender_label(&self.agent_name)).heading().strong());
-        ui.add_space(6.0);
-        kv(ui, "Address", &p.agent.to_string());
-        kv(ui, "Key fingerprint", &meshwav_receiver::discover::Found { addr: p.agent, key: p.key }.fingerprint());
-        ui.add_space(8.0);
+        if self.background && self.tray.is_none() {
+            ui.label(RichText::new("No tray icon is available here, so closing will still quit.").color(WARN));
+        }
+        ui.add_space(10.0);
         ui.separator();
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
+        ui.label(RichText::new("Receiving").size(20.0).strong());
+        ui.add_space(4.0);
         ui.label(RichText::new("Output").color(MUTED));
         if self.outputs.is_empty() {
             ui.label(RichText::new("System default (no list available)").color(MUTED));
         } else {
             let label = |d: &str, o: &[Output]| if d.is_empty() { "System default".to_string() } else { o.iter().find(|x| x.name == d).map(|x| x.description.clone()).unwrap_or_else(|| d.to_string()) };
             let before = self.device.clone();
-            egui::ComboBox::from_id_salt("output").width(ui.available_width() - 8.0).selected_text(label(&self.device, &self.outputs)).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("output").width((ui.available_width() - 8.0).min(420.0)).selected_text(label(&self.device, &self.outputs)).show_ui(ui, |ui| {
                 choice(ui, &mut self.device, String::new(), "System default");
                 for o in &self.outputs {
                     choice(ui, &mut self.device, o.name.clone(), &o.description);
@@ -711,11 +709,112 @@ impl App {
                 }
             }
         });
-        if self.lossless && !snap.note.is_empty() {
-            ui.label(RichText::new(&snap.note).color(WARN));
+        let note = self.worker.as_ref().map(|w| w.status.snapshot().note).unwrap_or_default();
+        if self.lossless && !note.is_empty() {
+            ui.label(RichText::new(note).color(WARN));
         } else if self.lossless {
             ui.label(RichText::new("Sends the audio uncompressed, about 1.7 Mbit/s, in 5 ms packets.").color(MUTED));
         }
+        ui.add_space(8.0);
+        if self.paired.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                if self.confirm_forget {
+                    ui.label(RichText::new("Forget this sender?").color(WARN));
+                    if ui.button("Forget").clicked() {
+                        self.stop();
+                        let _ = store::forget(&self.dir);
+                        self.paired = None;
+                        self.agent_name.clear();
+                        self.detail_open = false;
+                        self.confirm_forget = false;
+                        self.message = None;
+                    }
+                    if ui.button("Keep").clicked() {
+                        self.confirm_forget = false;
+                    }
+                } else if ui.button("Forget sender").clicked() {
+                    self.confirm_forget = true;
+                }
+            });
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("Sending").size(20.0).strong());
+        ui.add_space(4.0);
+        self.send.settings_body(ui);
+    }
+
+    fn main_screen(&mut self, ui: &mut egui::Ui, p: &Paired) {
+        let snap = self.worker.as_ref().map(|w| w.status.snapshot()).unwrap_or_default();
+        if is_wide(ui.available_width()) {
+            let (left, right) = split(ui);
+            let mut l = pane(ui, left);
+            self.receive_main(&mut l, &snap, true);
+            let mut r = pane(ui, right);
+            self.receive_details(&mut r, p, &snap, false);
+            finish_panes(ui, &l, &r);
+        } else if self.detail_open {
+            self.receive_details(ui, p, &snap, true);
+        } else {
+            self.receive_main(ui, &snap, false);
+        }
+    }
+
+    /// What is happening, who it comes from, the volume and one button. Details are behind the sender's row.
+    fn receive_main(&mut self, ui: &mut egui::Ui, snap: &Snapshot, wide: bool) {
+        let running = self.worker.is_some();
+        let (title, colour, detail) = headline(running, snap);
+        let playing = running && !snap.standby && snap.state == "Playing";
+        let name = sender_label(&self.agent_name);
+        ui.add_space(6.0);
+        ui.label(RichText::new(title).size(44.0).color(colour));
+        if playing {
+            ui.label(RichText::new(format!("from {name}")).size(20.0));
+            let codec = if snap.lossless { "Lossless PCM" } else { "Opus" };
+            ui.label(RichText::new(format!("{codec}  |  {} ms frames  |  {} ms buffer", snap.frame_ms, snap.buffer_ms)).color(MUTED));
+        } else if !detail.is_empty() {
+            ui.add(egui::Label::new(RichText::new(detail).color(MUTED)).wrap());
+        }
+        ui.add_space(20.0);
+        ui.label(RichText::new("Sender").color(MUTED));
+        ui.add_space(2.0);
+        if device_row(ui, &name, title, playing, wide).clicked() {
+            self.detail_open = true;
+        }
+        ui.add_space(20.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Volume").color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(format!("{}%", self.slider)).monospace().size(18.0));
+            });
+        });
+        ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(120.0);
+        if ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false)).changed() {
+            self.volume.set(self.slider);
+        }
+        ui.add_space(18.0);
+        if running {
+            if ui.add(egui::Button::new("Stop receiving").min_size(egui::vec2(160.0, 36.0))).clicked() {
+                self.stop();
+            }
+        } else if ui.add(primary("Resume receiving").min_size(egui::vec2(160.0, 36.0))).clicked() {
+            self.start();
+        }
+    }
+
+    /// What used to sit on the main screen: where the sender is, the output, the quality, the numbers.
+    fn receive_details(&mut self, ui: &mut egui::Ui, p: &Paired, snap: &Snapshot, page: bool) {
+        let running = self.worker.is_some();
+        if page && back_link(ui, "Back") {
+            self.detail_open = false;
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new(sender_label(&self.agent_name)).heading().strong());
+        ui.add_space(6.0);
+        kv(ui, "Address", &p.agent.to_string());
+        kv(ui, "Key fingerprint", &meshwav_receiver::discover::Found { addr: p.agent, key: p.key }.fingerprint());
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(4.0);
@@ -732,26 +831,17 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            if self.confirm_forget {
-                ui.label(RichText::new("Forget this sender?").color(WARN));
-                if ui.button("Forget").clicked() {
-                    self.stop();
-                    let _ = store::forget(&self.dir);
-                    self.paired = None;
-                    self.agent_name.clear();
-                    self.detail_open = false;
-                    self.confirm_forget = false;
-                    self.message = None;
-                }
-                if ui.button("Keep").clicked() {
-                    self.confirm_forget = false;
-                }
-            } else if ui.button("Forget sender").clicked() {
-                self.confirm_forget = true;
-            }
-        });
+        ui.label(RichText::new("Output, quality and forgetting this sender are in Settings.").color(MUTED));
     }
+}
+
+/// Hiding a window is not possible on Wayland (the compositor decides), so there it is minimised.
+fn hide_command() -> egui::ViewportCommand {
+    #[cfg(unix)]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("WINIT_UNIX_BACKEND").is_none_or(|v| v != "x11") {
+        return egui::ViewportCommand::Minimized(true);
+    }
+    egui::ViewportCommand::Visible(false)
 }
 
 fn window_icon() -> egui::IconData {
@@ -762,7 +852,7 @@ fn window_icon() -> egui::IconData {
 /// Open the window and run until it is closed.
 pub fn run_window() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([460.0, 600.0]).with_min_inner_size([360.0, 480.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([980.0, 700.0]).with_min_inner_size([360.0, 480.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
         ..Default::default()
     };
     eframe::run_native("Meshwav", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
