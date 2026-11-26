@@ -43,6 +43,8 @@ pub struct Snapshot {
     pub buffer_ms: u32,
     pub target_ms: u32,
     pub jitter_ms: f64,
+    /// The connected sender's own name (empty until connected, or if it sends none).
+    pub sender_name: String,
 }
 
 /// Live state for the UI or the log; cheap to read from any thread.
@@ -109,6 +111,8 @@ struct Conn {
     live: Arc<Live>,
     audio: Opener,
     ctl: Opener,
+    /// The sender's own name from the handshake; empty from a sender that predates it.
+    peer_name: String,
 }
 
 fn random_u32() -> u32 {
@@ -174,13 +178,13 @@ fn connect(s: &Settings, code: Option<&str>, stop: &AtomicBool) -> Result<Conn, 
             "no answer from the agent".into()
         })
     })?;
-    match ini.read_msg2(&reply) {
-        Ok(_) => {}
+    let peer_name = match ini.read_msg2_named(&reply) {
+        Ok((_, n)) => n,
         Err(ProtocolError::PeerMismatch) => {
             return Err(Hs::Fatal("The agent's key is not the one this receiver paired with. Pair again if you reinstalled the agent.".into()))
         }
         Err(e) => return Err(Hs::Retry(e.to_string())),
-    }
+    };
     let name: String = s.name.chars().filter(|c| !c.is_control()).collect();
     let name = truncate_utf8(&name, handshake::MAX_DEVICE_NAME);
     let m3 = handshake::frame(kind, sid, 3, &ini.write_msg3(name).map_err(|e| Hs::Fatal(e.to_string()))?);
@@ -192,6 +196,7 @@ fn connect(s: &Settings, code: Option<&str>, stop: &AtomicBool) -> Result<Conn, 
     }
     let keys = ini.finish().map_err(|e| Hs::Fatal(e.to_string()))?;
     Ok(Conn {
+        peer_name,
         audio: Opener::new(&keys.to_receiver, Direction::AgentToReceiver, AUDIO_STREAM),
         ctl: Opener::new(&keys.to_receiver, Direction::AgentToReceiver, CONTROL_STREAM),
         live: Arc::new(Live {
@@ -215,7 +220,11 @@ fn establish(s: &Settings, status: &Status, stop: &AtomicBool) -> Result<Conn, S
     while !stop.load(Ordering::Relaxed) {
         status.state(format!("Connecting to {}", s.agent));
         match connect(s, None, stop) {
-            Ok(c) => return Ok(c),
+            Ok(c) => {
+                let n = c.peer_name.clone();
+                status.update(|x| x.sender_name = n);
+                return Ok(c);
+            }
             Err(Hs::Fatal(m)) => return Err(m),
             Err(Hs::Stopped) => break,
             Err(Hs::Retry(m)) => status.state(format!("Waiting for the agent ({m})")),

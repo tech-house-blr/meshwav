@@ -361,6 +361,9 @@ impl App {
     }
 
     fn poll(&mut self) {
+        if let Some(w) = &self.worker {
+            store::remember_agent_name(&self.dir, &w.status.snapshot().sender_name);
+        }
         if let Some(p) = &mut self.pairing {
             if p.asking.is_none() {
                 p.asking = p.ask.try_recv().ok();

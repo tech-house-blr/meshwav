@@ -269,6 +269,15 @@ impl Session {
     }
 }
 
+/// This computer's name, sent to receivers so they can show it instead of an address.
+fn computer_name() -> String {
+    let env = |k: &str| std::env::var(k).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    env("COMPUTERNAME")
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .or_else(|| env("HOSTNAME"))
+        .unwrap_or_default()
+}
+
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -630,7 +639,9 @@ pub fn run(args: Vec<String>) {
     let t0 = Instant::now();
     let now_ms = move || t0.elapsed().as_millis() as u64;
     let public = identity.public;
-    let server = Arc::new(Mutex::new(Server::new(identity, authorized)));
+    let mut srv = Server::new(identity, authorized);
+    srv.set_name(&computer_name());
+    let server = Arc::new(Mutex::new(srv));
     let open_window = {
         let server = server.clone();
         move || {

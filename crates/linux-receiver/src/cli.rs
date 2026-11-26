@@ -147,6 +147,7 @@ pub fn run_cli(program: &str, args: Vec<String>) {
                 while !h.is_finished() {
                     std::thread::sleep(Duration::from_millis(500));
                     let st = status.snapshot();
+                    store::remember_agent_name(&dir, &st.sender_name);
                     if st.state != last {
                         eprintln!("{}", st.state);
                         last = st.state;

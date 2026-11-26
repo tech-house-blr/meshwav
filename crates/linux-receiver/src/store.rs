@@ -135,7 +135,24 @@ pub fn load_paired(dir: &Path) -> std::io::Result<Option<Paired>> {
     Ok(Some(Paired { agent, key }))
 }
 
+/// The sender's own name, remembered from its last handshake so lists can show it instead of an address.
+pub fn save_agent_name(dir: &Path, name: &str) -> std::io::Result<()> {
+    write_private(&dir.join("agent-name"), &format!("{}\n", name.trim()))
+}
+
+pub fn load_agent_name(dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dir.join("agent-name")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Writes the name only when it is new.
+pub fn remember_agent_name(dir: &Path, name: &str) {
+    if !name.trim().is_empty() && load_agent_name(dir).as_deref() != Some(name.trim()) {
+        let _ = save_agent_name(dir, name);
+    }
+}
+
 pub fn forget(dir: &Path) -> std::io::Result<bool> {
+    let _ = std::fs::remove_file(dir.join("agent-name"));
     match std::fs::remove_file(dir.join("agent")) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
@@ -218,6 +235,11 @@ mod tests {
     #[test]
     fn paired_agent_round_trips_and_can_be_forgotten() {
         let d = tmp("paired");
+        assert_eq!(load_agent_name(&d), None);
+        remember_agent_name(&d, "liberation");
+        assert_eq!(load_agent_name(&d).as_deref(), Some("liberation"));
+        remember_agent_name(&d, "  ");
+        assert_eq!(load_agent_name(&d).as_deref(), Some("liberation"));
         assert_eq!(load_paired(&d).unwrap(), None);
         let p = Paired { agent: "100.72.29.9:47900".parse().unwrap(), key: [7; 32] };
         save_paired(&d, &p).unwrap();
