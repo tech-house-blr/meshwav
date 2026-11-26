@@ -336,6 +336,19 @@ fn open_capture(_source: &str) -> (Box<dyn Read + Send>, Option<std::process::Ch
     }
 }
 
+/// The tailnet address. On Windows the sender starts at sign-in, often before Tailscale is up and
+/// with nothing to restart it (Linux's systemd retries every 5 s), so it waits up to two minutes.
+fn tailscale_ip_waiting() -> Option<String> {
+    #[cfg(windows)]
+    for _ in 0..40 {
+        if let Some(ip) = tailscale_ip() {
+            return Some(ip);
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    tailscale_ip()
+}
+
 fn tailscale_ip() -> Option<String> {
     let mut c = Command::new("tailscale");
     c.args(["ip", "-4"]);
@@ -572,7 +585,7 @@ pub fn run(args: Vec<String>) {
     }
     let source = setting("--source", "source");
     let no_redirect = args.iter().any(|a| a == "--no-redirect") || cfg.flag("no_redirect").unwrap_or_else(|e| fatal(&e)).unwrap_or(false);
-    let bind = setting("--bind", "bind").unwrap_or_else(|| match tailscale_ip() {
+    let bind = setting("--bind", "bind").unwrap_or_else(|| match tailscale_ip_waiting() {
         Some(ip) => format!("{ip}:{DEFAULT_PORT}"),
         None => {
             eprintln!("cannot determine tailscale IP; pass --bind IP:PORT");
