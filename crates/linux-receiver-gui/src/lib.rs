@@ -3,12 +3,14 @@
 //! paired receivers. One mode runs at a time. The receiving engine is the library the command-line
 //! receiver uses.
 mod send;
+mod ui;
 #[cfg(windows)]
 mod wintray;
 use eframe::egui::{self, Color32, FontId, RichText, TextStyle};
 use meshwav_receiver::sink::{list_outputs, open_default, Gain, Output, Volume};
 use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Snapshot, Status};
+use ui::{back_link, device_row, finish_panes, is_wide, kv, pane, primary, sender_label, split};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -128,12 +130,16 @@ impl ksni::Tray for Tray {
     }
 }
 
-const BG: Color32 = Color32::from_rgb(0x17, 0x19, 0x1c);
-const PANEL: Color32 = Color32::from_rgb(0x1f, 0x22, 0x26);
-const LINE: Color32 = Color32::from_rgb(0x34, 0x38, 0x3e);
-const TEXT: Color32 = Color32::from_rgb(0xe3, 0xe6, 0xea);
-const MUTED: Color32 = Color32::from_rgb(0x9a, 0xa1, 0xab);
-const ACCENT: Color32 = Color32::from_rgb(0x7f, 0xc4, 0xb0);
+const BG: Color32 = Color32::from_rgb(0x14, 0x16, 0x18);
+const PANEL: Color32 = Color32::from_rgb(0x1b, 0x1e, 0x21);
+const HOVER: Color32 = Color32::from_rgb(0x17, 0x1a, 0x1c);
+const LINE: Color32 = Color32::from_rgb(0x2a, 0x2e, 0x33);
+const TEXT: Color32 = Color32::from_rgb(0xe8, 0xea, 0xec);
+const MUTED: Color32 = Color32::from_rgb(0x8f, 0x97, 0x9f);
+/// Acid chartreuse. The one accent: the active device, the main button, "Playing".
+const ACCENT: Color32 = Color32::from_rgb(0xc8, 0xff, 0x2e);
+/// Text on a control filled with the accent.
+const ACCENT_INK: Color32 = Color32::from_rgb(0x0f, 0x14, 0x00);
 const WARN: Color32 = Color32::from_rgb(0xe0, 0xa8, 0x5c);
 const BAD: Color32 = Color32::from_rgb(0xe0, 0x7a, 0x70);
 
@@ -187,6 +193,10 @@ struct App {
     tray_state: String,
     mode: Mode,
     send: send::SendPanel,
+    /// The sender's own name, as it last told us.
+    agent_name: String,
+    /// In a narrow window: showing the sender's details page instead of the main view.
+    detail_open: bool,
 }
 
 fn device_path(dir: &std::path::Path) -> PathBuf {
@@ -216,6 +226,7 @@ impl App {
         let device = std::fs::read_to_string(device_path(&dir)).unwrap_or_default().trim().to_string();
         let start_volume = std::fs::read_to_string(volume_path(&dir)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100u32).min(100);
         let lossless = std::fs::read_to_string(quality_path(&dir)).map(|s| s.trim() == "lossless").unwrap_or(false);
+        let agent_name = store::load_agent_name(&dir).unwrap_or_default();
         let mut app = App {
             dir,
             name: store::host_name(),
@@ -235,6 +246,8 @@ impl App {
             tray_state: String::new(),
             mode: Mode::Receive,
             send: send::SendPanel::new(&base),
+            agent_name,
+            detail_open: false,
         };
         app.mode = std::fs::read_to_string(mode_path(&app.dir)).ok().and_then(|m| match m.trim() {
             "send" => Some(Mode::Send),
@@ -362,7 +375,11 @@ impl App {
 
     fn poll(&mut self) {
         if let Some(w) = &self.worker {
-            store::remember_agent_name(&self.dir, &w.status.snapshot().sender_name);
+            let n = w.status.snapshot().sender_name;
+            store::remember_agent_name(&self.dir, &n);
+            if !n.is_empty() && n != self.agent_name {
+                self.agent_name = n;
+            }
         }
         if let Some(p) = &mut self.pairing {
             if p.asking.is_none() {
@@ -407,8 +424,9 @@ fn style(ctx: &egui::Context) {
     v.panel_fill = BG;
     v.window_fill = PANEL;
     v.override_text_color = Some(TEXT);
-    v.extreme_bg_color = Color32::from_rgb(0x11, 0x13, 0x15);
-    v.selection.bg_fill = Color32::from_rgb(0x2f, 0x5a, 0x4e);
+    v.extreme_bg_color = Color32::from_rgb(0x0f, 0x11, 0x12);
+    v.selection.bg_fill = ACCENT;
+    v.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT_INK);
     v.hyperlink_color = ACCENT;
     let r = egui::Rounding::same(2.0);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
@@ -442,14 +460,15 @@ fn style(ctx: &egui::Context) {
 /// What to say in big letters, and the detail under it.
 fn headline(running: bool, s: &Snapshot) -> (&'static str, Color32, String) {
     if !running {
-        return ("Stopped", MUTED, "Not connected to the agent.".into());
+        return ("Stopped", MUTED, "Not connected to the sender.".into());
     }
     if s.standby {
-        return ("Standby", WARN, "The agent is sending audio to another device. Choose this one with `meshwav use`.".into());
+        return ("Standby", WARN, "The sender is playing on another device. Choose this one on the sender.".into());
     }
     match s.state.as_str() {
         "Playing" => ("Playing", ACCENT, String::new()),
         "" | "Idle" => ("Connecting", MUTED, String::new()),
+        other if other.starts_with("Connecting to ") => ("Connecting", MUTED, String::new()),
         other => ("Connecting", MUTED, other.to_string()),
     }
 }
@@ -490,20 +509,24 @@ impl eframe::App for App {
                 ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak().small());
                 ui.add_space(14.0);
                 let mut to = self.mode;
-                ui.selectable_value(&mut to, Mode::Receive, "Receive");
-                ui.selectable_value(&mut to, Mode::Send, "Send");
+                for (m, label) in [(Mode::Receive, "Receive"), (Mode::Send, "Send")] {
+                    let t = if to == m { RichText::new(label).color(ACCENT_INK) } else { RichText::new(label) };
+                    ui.selectable_value(&mut to, m, t);
+                }
                 self.switch_mode(to);
             });
             ui.separator();
-            match (self.mode, self.paired.clone()) {
-                (Mode::Send, _) => self.send.ui(ui),
-                (Mode::Receive, None) => self.pairing_screen(ui),
-                (Mode::Receive, Some(p)) => self.main_screen(ui, &p),
-            }
-            if let Some((m, c)) = &self.message {
-                ui.add_space(6.0);
-                ui.label(RichText::new(m).color(*c));
-            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                match (self.mode, self.paired.clone()) {
+                    (Mode::Send, _) => self.send.ui(ui),
+                    (Mode::Receive, None) => self.pairing_screen(ui),
+                    (Mode::Receive, Some(p)) => self.main_screen(ui, &p),
+                }
+                if let Some((m, c)) = &self.message {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(m).color(*c));
+                }
+            });
         });
     }
 
@@ -583,11 +606,26 @@ impl App {
     }
 
     fn main_screen(&mut self, ui: &mut egui::Ui, p: &Paired) {
-        let running = self.worker.is_some();
         let snap = self.worker.as_ref().map(|w| w.status.snapshot()).unwrap_or_default();
-        let (title, colour, detail) = headline(running, &snap);
-        ui.label(RichText::new(format!("Agent {}", p.agent)).monospace().color(MUTED));
-        ui.add_space(8.0);
+        if is_wide(ui.available_width()) {
+            let (left, right) = split(ui);
+            let mut l = pane(ui, left);
+            self.receive_main(&mut l, &snap, true);
+            let mut r = pane(ui, right);
+            self.receive_details(&mut r, p, &snap, false);
+            finish_panes(ui, &l, &r);
+        } else if self.detail_open {
+            self.receive_details(ui, p, &snap, true);
+        } else {
+            self.receive_main(ui, &snap, false);
+        }
+    }
+
+    /// The sender, its state, the volume and Start or Stop. Everything else is behind the sender's row.
+    fn receive_main(&mut self, ui: &mut egui::Ui, snap: &Snapshot, wide: bool) {
+        let running = self.worker.is_some();
+        let (title, colour, detail) = headline(running, snap);
+        ui.add_space(4.0);
         ui.label(RichText::new(title).size(34.0).color(colour));
         if !detail.is_empty() {
             ui.label(RichText::new(detail).color(MUTED));
@@ -596,7 +634,44 @@ impl App {
             let codec = if snap.lossless { "Lossless PCM" } else { "Opus" };
             ui.label(RichText::new(format!("{codec}, {} ms frames", snap.frame_ms)).color(MUTED));
         }
-        ui.add_space(10.0);
+        ui.add_space(14.0);
+        ui.label(RichText::new("Sender").color(MUTED));
+        ui.add_space(2.0);
+        let name = sender_label(&self.agent_name);
+        if device_row(ui, &name, title, running && !snap.standby && snap.state == "Playing", wide).clicked() {
+            self.detail_open = true;
+        }
+        ui.add_space(14.0);
+        ui.label(RichText::new("Volume").color(MUTED));
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false));
+            if r.changed() {
+                self.volume.set(self.slider);
+            }
+            ui.label(RichText::new(format!("{:>3}%", self.slider)).monospace());
+        });
+        ui.add_space(12.0);
+        if running {
+            if ui.button("Stop").clicked() {
+                self.stop();
+            }
+        } else if ui.add(primary("Start")).clicked() {
+            self.start();
+        }
+    }
+
+    /// What used to sit on the main screen: where the sender is, the output, the quality, the numbers.
+    fn receive_details(&mut self, ui: &mut egui::Ui, p: &Paired, snap: &Snapshot, page: bool) {
+        let running = self.worker.is_some();
+        if page && back_link(ui, "Back") {
+            self.detail_open = false;
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new(sender_label(&self.agent_name)).heading().strong());
+        ui.add_space(6.0);
+        kv(ui, "Address", &p.agent.to_string());
+        kv(ui, "Key fingerprint", &meshwav_receiver::discover::Found { addr: p.agent, key: p.key }.fingerprint());
+        ui.add_space(8.0);
         ui.separator();
         ui.add_space(4.0);
 
@@ -604,7 +679,7 @@ impl App {
         if self.outputs.is_empty() {
             ui.label(RichText::new("System default (no list available)").color(MUTED));
         } else {
-            let label = |d: &str, o: &[Output]| if d.is_empty() { "System default".to_string() } else { o.iter().find(|x| x.name == d).map(|x| x.description.clone()).unwrap_or_else(|| format!("{d} (not found)")) };
+            let label = |d: &str, o: &[Output]| if d.is_empty() { "System default".to_string() } else { o.iter().find(|x| x.name == d).map(|x| x.description.clone()).unwrap_or_else(|| d.to_string()) };
             let before = self.device.clone();
             egui::ComboBox::from_id_salt("output").width(ui.available_width() - 8.0).selected_text(label(&self.device, &self.outputs)).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.device, String::new(), "System default");
@@ -642,19 +717,10 @@ impl App {
             ui.label(RichText::new("Sends the audio uncompressed, about 1.7 Mbit/s, in 5 ms packets.").color(MUTED));
         }
         ui.add_space(8.0);
-        ui.label(RichText::new("Volume").color(MUTED));
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false));
-            if r.changed() {
-                self.volume.set(self.slider);
-            }
-            ui.label(RichText::new(format!("{:>3}%", self.slider)).monospace());
-        });
-        ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
 
-        egui::Grid::new("stats").num_columns(2).min_col_width(150.0).spacing([10.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("stats").num_columns(2).min_col_width(130.0).spacing([10.0, 6.0]).show(ui, |ui| {
             if running {
                 row(ui, "Buffer", format!("{} ms of {} ms", snap.buffer_ms, snap.target_ms));
                 row(ui, "Network jitter", format!("{:.1} ms", snap.jitter_ms));
@@ -666,27 +732,22 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            if running {
-                if ui.button("Stop").clicked() {
-                    self.stop();
-                }
-            } else if ui.button("Start").clicked() {
-                self.start();
-            }
+        ui.horizontal_wrapped(|ui| {
             if self.confirm_forget {
-                ui.label(RichText::new("Forget this agent?").color(WARN));
+                ui.label(RichText::new("Forget this sender?").color(WARN));
                 if ui.button("Forget").clicked() {
                     self.stop();
                     let _ = store::forget(&self.dir);
                     self.paired = None;
+                    self.agent_name.clear();
+                    self.detail_open = false;
                     self.confirm_forget = false;
                     self.message = None;
                 }
                 if ui.button("Keep").clicked() {
                     self.confirm_forget = false;
                 }
-            } else if ui.button("Forget agent").clicked() {
+            } else if ui.button("Forget sender").clicked() {
                 self.confirm_forget = true;
             }
         });
@@ -701,7 +762,7 @@ fn window_icon() -> egui::IconData {
 /// Open the window and run until it is closed.
 pub fn run_window() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([460.0, 600.0]).with_min_inner_size([360.0, 480.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
         ..Default::default()
     };
     eframe::run_native("Meshwav", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))

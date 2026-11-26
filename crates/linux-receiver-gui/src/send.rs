@@ -1,6 +1,7 @@
 //! The Send side of the window. The sender itself is the `meshwav-agent` systemd user service; this
 //! panel starts and stops that service and talks to it over its owner-only control socket (the same
 //! one `meshwav devices | use | rename | pair` use). Audio keeps flowing when the window is closed.
+use super::ui::{back_link, device_row, finish_panes, is_wide, key_groups, kv, pane, primary, split, state_label};
 use super::{ACCENT, BAD, MUTED, WARN};
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
@@ -109,6 +110,8 @@ pub struct SendPanel {
     code: Option<OpenCode>,
     rename: Option<(String, String)>,
     confirm_remove: Option<String>,
+    /// Key of the receiver whose details are open.
+    selected: Option<String>,
     last: Instant,
     message: Option<(String, bool)>,
     sock: PathBuf,
@@ -131,6 +134,7 @@ impl SendPanel {
             code: None,
             rename: None,
             confirm_remove: None,
+            selected: None,
             last: Instant::now() - Duration::from_secs(10),
             message: None,
             sock: dir.join("control.sock"),
@@ -263,13 +267,13 @@ impl SendPanel {
         match self.service {
             ServiceState::NotInstalled => {
                 ui.label(SETUP_HELP);
-                if ui.button("Set up and start").clicked() {
+                if ui.add(primary("Set up and start")).clicked() {
                     let r = install_service(&self.exe);
                     self.act(r);
                 }
             }
             ServiceState::Stopped => {
-                if ui.button("Start sending").clicked() {
+                if ui.add(primary("Start sending")).clicked() {
                     self.act(start_service());
                 }
             }
@@ -283,6 +287,30 @@ impl SendPanel {
         ui.separator();
 
         if self.is_running() {
+            if self.selected.as_ref().is_some_and(|k| !self.devices.iter().any(|d| &d.key == k)) {
+                self.selected = None;
+            }
+            if is_wide(ui.available_width()) {
+                let (left, right) = split(ui);
+                let mut l = pane(ui, left);
+                self.pairing_ui(&mut l);
+                l.add_space(4.0);
+                l.separator();
+                self.devices_ui(&mut l);
+                let mut r = pane(ui, right);
+                if self.selected.is_some() {
+                    self.detail_ui(&mut r, false);
+                } else {
+                    r.add_space(8.0);
+                    r.label(RichText::new("Select a receiver to see its details.").color(MUTED));
+                }
+                finish_panes(ui, &l, &r);
+                return;
+            }
+            if self.selected.is_some() {
+                self.detail_ui(ui, true);
+                return;
+            }
             self.pairing_ui(ui);
             ui.add_space(4.0);
             ui.separator();
@@ -301,7 +329,7 @@ impl SendPanel {
         ui.label(RichText::new("Add a receiver").color(MUTED));
         match &self.code {
             None => {
-                if ui.button("Show pairing code").clicked() {
+                if ui.add(primary("Show pairing code")).clicked() {
                     self.open_pairing();
                 }
             }
@@ -331,61 +359,83 @@ impl SendPanel {
             ui.label(RichText::new("None yet.").color(MUTED));
             return;
         }
-        let mut action: Option<String> = None;
-        let mut start_rename: Option<(String, String)> = None;
+        ui.add_space(2.0);
         for d in self.devices.clone() {
+            let (state, active) = state_label(&d.state, d.chosen);
+            let open = self.selected.as_ref() == Some(&d.key);
+            if device_row(ui, &d.name, &state, active, open).clicked() {
+                self.selected = Some(d.key.clone());
+                self.rename = None;
+                self.confirm_remove = None;
+            }
+        }
+    }
+
+    /// One receiver: its name and state, the key, and what can be done with it.
+    fn detail_ui(&mut self, ui: &mut egui::Ui, page: bool) {
+        let Some(d) = self.selected.as_ref().and_then(|k| self.devices.iter().find(|d| &d.key == k)).cloned() else {
+            return;
+        };
+        if page && back_link(ui, "Receivers") {
+            self.selected = None;
+            return;
+        }
+        let (state, active) = state_label(&d.state, d.chosen);
+        let mut action: Option<String> = None;
+        ui.add_space(4.0);
+        if let Some((_, text)) = &mut self.rename.as_mut().filter(|(k, _)| *k == d.key) {
+            let r = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width() - 8.0));
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.horizontal(|ui| {
-                let state = match (d.state.as_str(), d.chosen) {
-                    ("active", _) => "playing".to_string(),
-                    (s, true) => format!("{s}, chosen"),
-                    (s, false) => s.to_string(),
-                };
-                if self.rename.as_ref().is_some_and(|(k, _)| *k == d.key) {
-                    let mut done = false;
-                    if let Some((_, text)) = &mut self.rename {
-                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(140.0));
-                        done = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    }
-                    if ui.button("Save").clicked() || done {
-                        if let Some((k, t)) = self.rename.take() {
-                            let t: String = t.chars().filter(|c| !c.is_control()).collect();
-                            if !t.trim().is_empty() {
-                                action = Some(format!("rename\t{k}\t{}", t.trim()));
-                            }
+                if ui.add(primary("Save")).clicked() || enter {
+                    if let Some((k, t)) = self.rename.take() {
+                        let t: String = t.chars().filter(|c| !c.is_control()).collect();
+                        if !t.trim().is_empty() {
+                            action = Some(format!("rename\t{k}\t{}", t.trim()));
                         }
                     }
-                    if ui.button("Cancel").clicked() {
-                        self.rename = None;
-                    }
-                } else if self.confirm_remove.as_ref() == Some(&d.key) {
-                    ui.label(RichText::new(format!("Remove {}? It must pair again with a new code.", d.name)));
-                    if ui.button("Remove").clicked() {
-                        self.confirm_remove = None;
-                        action = Some(format!("remove\t{}", d.key));
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.confirm_remove = None;
-                    }
-                } else {
-                    ui.label(RichText::new(&d.name).strong());
-                    ui.label(RichText::new(state).color(if d.state == "active" { ACCENT } else { MUTED }));
-                    if d.state != "active" && ui.small_button("Play here").clicked() {
-                        action = Some(format!("use\t{}", d.key));
-                    }
-                    if ui.small_button("Rename").clicked() {
-                        start_rename = Some((d.key.clone(), d.name.clone()));
-                    }
-                    if ui.small_button("Remove").clicked() {
-                        self.confirm_remove = Some(d.key.clone());
-                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    self.rename = None;
                 }
             });
+        } else {
+            ui.label(RichText::new(&d.name).heading().strong());
         }
-        if start_rename.is_some() {
-            self.rename = start_rename;
-        }
-        if self.devices.iter().any(|d| d.chosen) && ui.small_button("Choose automatically").clicked() {
-            action = Some("use\tauto".into());
+        ui.label(RichText::new(&state).color(if active { ACCENT } else { MUTED }));
+        ui.add_space(8.0);
+        kv(ui, "Key", &key_groups(&d.key));
+        kv(ui, "Selection", if d.chosen { "Chosen by you" } else { "Automatic" });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        if self.confirm_remove.as_ref() == Some(&d.key) {
+            ui.label(RichText::new(format!("Remove {}? It must pair again with a new code.", d.name)).color(WARN));
+            ui.horizontal(|ui| {
+                if ui.button("Remove").clicked() {
+                    self.confirm_remove = None;
+                    self.selected = None;
+                    action = Some(format!("remove\t{}", d.key));
+                }
+                if ui.button("Keep").clicked() {
+                    self.confirm_remove = None;
+                }
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                if !active && ui.add(primary("Play here")).clicked() {
+                    action = Some(format!("use\t{}", d.key));
+                }
+                if ui.button("Rename").clicked() {
+                    self.rename = Some((d.key.clone(), d.name.clone()));
+                }
+                if ui.button("Remove").clicked() {
+                    self.confirm_remove = Some(d.key.clone());
+                }
+            });
+            if d.chosen && ui.small_button("Choose automatically").clicked() {
+                action = Some("use\tauto".into());
+            }
         }
         if let Some(a) = action {
             self.command(a);
