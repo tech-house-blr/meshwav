@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/audio-protocol", "crates/audio-codec", "crates/audio-transport", "crates/desktop-agent", "crates/meshwav", "crates/linux-receiver", "crates/linux-receiver-gui", "crates/android-spike"]  # more crates are added as each milestone lands
 
 [workspace.package]
-version = "0.7.1"
+version = "0.8.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Shreyas Salankimatt"]
