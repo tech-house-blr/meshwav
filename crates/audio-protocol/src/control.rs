@@ -54,6 +54,11 @@ pub enum Message {
     /// Agent tells receivers it understands `PlayHere`. Repeated with the keepalive, so a receiver only offers
     /// the action to agents that support it. Older receivers fail to decode it and ignore it.
     PlayHereSupported,
+    /// Set the output level (0..=100) of the receiver that is playing. Receiver to agent, then agent to
+    /// the active receiver.
+    SetVolume { percent: u8 },
+    /// The playing receiver's current level. Receiver to agent, then agent to the other receivers.
+    VolumeLevel { percent: u8 },
 }
 
 pub const REJECT_BITRATE: u8 = 1;
@@ -103,6 +108,9 @@ impl<'a> R<'a> {
         Ok(a)
     }
     fn u8(&mut self) -> Result<u8, ProtocolError> { Ok(self.take(1)?[0]) }
+    fn pct(&mut self) -> Result<u8, ProtocolError> {
+        match self.u8()? { v @ 0..=100 => Ok(v), _ => Err(ProtocolError::BadControl("bad percent")) }
+    }
     fn u16(&mut self) -> Result<u16, ProtocolError> { Ok(u16::from_be_bytes(self.take(2)?.try_into().unwrap())) }
     fn u32(&mut self) -> Result<u32, ProtocolError> { Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap())) }
     fn u64(&mut self) -> Result<u64, ProtocolError> { Ok(u64::from_be_bytes(self.take(8)?.try_into().unwrap())) }
@@ -150,6 +158,8 @@ impl Message {
             Message::TimeRef { ts, t_us } => { w.u8(15); w.u32(*ts); w.u64(*t_us); }
             Message::PlayHere => w.u8(16),
             Message::PlayHereSupported => w.u8(17),
+            Message::SetVolume { percent } => { w.u8(18); w.u8(*percent); }
+            Message::VolumeLevel { percent } => { w.u8(19); w.u8(*percent); }
         }
         let len = (w.0.len() - 2) as u16;
         w.0[0..2].copy_from_slice(&len.to_be_bytes());
@@ -180,6 +190,8 @@ impl Message {
             15 => Message::TimeRef { ts: r.u32()?, t_us: r.u64()? },
             16 => Message::PlayHere,
             17 => Message::PlayHereSupported,
+            18 => Message::SetVolume { percent: r.pct()? },
+            19 => Message::VolumeLevel { percent: r.pct()? },
             _ => return Err(ProtocolError::BadControl("unknown type")),
         };
         if !r.0.is_empty() { return Err(ProtocolError::BadControl("trailing bytes")) }

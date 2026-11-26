@@ -43,6 +43,7 @@ object Stats {
     @Volatile var lossless = false
     @Volatile var qualityNote = ""   // e.g. why lossless was dropped
     @Volatile var output = ""        // what Android actually granted for playback
+    @Volatile var remoteVolume = -1 // level of the device that is playing, relayed by the agent; -1 = unknown
     @Volatile var canPlayHere = false // the agent said it can switch the audio to this device on request
     @Volatile var standby = false    // the agent sends audio to another of your receivers
     // End-to-end delay, smoothed, from the agent's capture stamps. -1 = not measured (yet, or the agent is too old).
@@ -55,7 +56,7 @@ object Stats {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
         decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0; trackStalls = -1; trackMaxGapMs = -1; trackLateWrites = -1; trackLateStalls = -1; recvLateGaps = 0; recvMaxGapMs = 0
-        agentName = ""; kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false; canPlayHere = false
+        agentName = ""; kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false; canPlayHere = false; remoteVolume = -1
         e2eMs = -1.0; e2eNetMs = 0.0; e2eBufMs = 0.0; e2eErrMs = -1.0
     }
 }
@@ -136,6 +137,25 @@ class StreamReceiver(
         threads.clear()
         live = null
         if (!Stats.state.contains("error", ignoreCase = true)) Stats.state = "Idle"
+    }
+
+    private val pendingVolume = java.util.concurrent.atomic.AtomicInteger(-1)
+
+    /** Ask the device that is playing to use this level. Sent from the 50 ms tick, so a drag collapses to its last value. */
+    fun setRemoteVolume(percent: Int) { pendingVolume.set(percent.coerceIn(0, 100)); volRepeat = 1 }
+    @Volatile private var volRepeat = 0
+    private var lastVolSent = -1; private var nextVolAt = 0L; private var nextReportAt = 0L; private var lastReported = -1
+
+    private fun musicVolumePercent(): Int? {
+        val am = context?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return null
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        return if (max > 0) am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) * 100 / max else null
+    }
+
+    private fun applyMusicVolume(percent: Int) {
+        val am = context?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, (percent * max + 50) / 100, 0)
     }
 
     /** Ask the agent to send the audio here and keep doing so. Sent 3 times (UDP), off the caller's thread. */
@@ -273,6 +293,22 @@ class StreamReceiver(
                         socket?.send(DatagramPacket(d, d.size))
                         l.nextPingAt = now + if (++l.pings < 8) 250L else 1000L
                     }
+                    val pv = pendingVolume.get()
+                    if (pv >= 0 && now >= nextVolAt && (pv != lastVolSent || volRepeat > 0)) {
+                        if (pv == lastVolSent) volRepeat-- else volRepeat = 1
+                        lastVolSent = pv; nextVolAt = now + 60
+                        val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ControlWire.encodeSetVolume(pv))
+                        socket?.send(DatagramPacket(d, d.size))
+                    }
+                    // While we play, tell the agent our level when it changes and every 1.5 s, so the others can show it.
+                    if (!Stats.standby && Stats.state == "Playing") {
+                        val mv = musicVolumePercent()
+                        if (mv != null && (mv != lastReported || now >= nextReportAt)) {
+                            lastReported = mv; nextReportAt = now + 1500
+                            val d = Wire.seal(l.keys.toAgent, Wire.DIR_RECEIVER_TO_AGENT, CONTROL_STREAM, l.ctlSeq.getAndIncrement(), Wire.TYPE_CONTROL, 0, ControlWire.encodeVolumeLevel(mv))
+                            socket?.send(DatagramPacket(d, d.size))
+                        }
+                    }
                     if (Stats.lossless && Controls.desiredCodec == ControlWire.CODEC_PCM &&
                         guard.feed(now, Stats.received, Stats.lost + Stats.late + Stats.underruns)) {
                         Controls.desiredCodec = ControlWire.CODEC_OPUS
@@ -366,6 +402,10 @@ class StreamReceiver(
                         Stats.e2eErrMs = if (l.clock.errorUs < 0) -1.0 else l.clock.errorUs / 1000.0
                     } else if (m is ControlWire.Msg.TimeRef) {
                         l.clock.onTimeRef(m.ts, m.agentUs)
+                    } else if (m is ControlWire.Msg.SetVolume) {
+                        try { applyMusicVolume(m.percent) } catch (_: Exception) {}
+                    } else if (m is ControlWire.Msg.VolumeLevel) {
+                        Stats.remoteVolume = m.percent
                     } else if (m is ControlWire.Msg.PlayHereSupported) {
                         Stats.canPlayHere = true
                     } else if (m is ControlWire.Msg.Active) {

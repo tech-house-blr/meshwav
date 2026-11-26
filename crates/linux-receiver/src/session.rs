@@ -47,6 +47,9 @@ pub struct Snapshot {
     pub sender_name: String,
     /// The sender said it can switch the audio to this device on request.
     pub can_play_here: bool,
+    /// The level (0..=100) of the device that is playing, as the sender last relayed it. `None` when this
+    /// device is the one playing, or the playing device cannot report one.
+    pub remote_volume: Option<u8>,
 }
 
 /// Live state for the UI or the log; cheap to read from any thread.
@@ -58,6 +61,14 @@ pub struct Status {
     cfg_ack: std::sync::atomic::AtomicU16,
     /// Copies of `PlayHere` still to send (UDP, so a few).
     play_here_left: std::sync::atomic::AtomicU8,
+    // The four below hold `percent + 1`, so 0 (the default) means nothing.
+    /// A level this device wants the playing device to use, and how many copies are still to go out.
+    vol_ask: std::sync::atomic::AtomicU16,
+    vol_ask_left: std::sync::atomic::AtomicU8,
+    /// A level the sender asked this device to apply; the owner of the volume takes it.
+    vol_apply: std::sync::atomic::AtomicU16,
+    /// This device's own level, reported to the sender while it plays. 0 = this device cannot report one.
+    vol_local: std::sync::atomic::AtomicU16,
 }
 
 impl Status {
@@ -72,6 +83,23 @@ impl Status {
     /// `Snapshot::can_play_here` is set.
     pub fn play_here(&self) {
         self.play_here_left.store(3, Ordering::Relaxed);
+    }
+    /// Ask the device that is playing to use this level. Only meaningful while `Snapshot::remote_volume` is set.
+    pub fn set_remote_volume(&self, percent: u32) {
+        self.vol_ask.store(percent.min(100) as u16 + 1, Ordering::Relaxed);
+        self.vol_ask_left.store(2, Ordering::Relaxed);
+    }
+    /// Tell the sender this device's own level, so the other devices can show it. Call whenever it changes
+    /// or once a frame; it is only sent while this device is the one playing.
+    pub fn report_volume(&self, percent: u32) {
+        self.vol_local.store(percent.min(100) as u16 + 1, Ordering::Relaxed);
+    }
+    /// A level another device asked this one to play at, if any. Apply it to the output volume.
+    pub fn take_volume_request(&self) -> Option<u32> {
+        match self.vol_apply.swap(0, Ordering::Relaxed) {
+            0 => None,
+            v => Some(v as u32 - 1),
+        }
     }
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.snap.lock().unwrap());
@@ -234,6 +262,7 @@ fn establish(s: &Settings, status: &Status, stop: &AtomicBool) -> Result<Conn, S
                 status.update(|x| {
                     x.sender_name = n;
                     x.can_play_here = false;
+                    x.remote_volume = None;
                 });
                 return Ok(c);
             }
@@ -351,6 +380,7 @@ fn punch_loop(sh: &Shared) {
     // Codec requests: a new series starts when the wish changes or the connection is rebuilt, and runs
     // until the agent answers it (or 10 tries), so a sender that refuses is not asked forever.
     let (mut want_seen, mut req, mut tries, mut cfg_next, mut play_next) = (false, 0u16, 0u32, 0u64, 0u64);
+    let (mut vol_next, mut vol_sent, mut vol_report_at) = (0u64, 0u16, 0u64);
     while !sh.stop.load(Ordering::Relaxed) {
         let live = sh.live.lock().unwrap().clone();
         if let Some(l) = live {
@@ -380,6 +410,20 @@ fn punch_loop(sh: &Shared) {
                 sh.status.play_here_left.fetch_sub(1, Ordering::Relaxed);
                 let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &Message::PlayHere.encode()));
                 play_next = now + 200;
+            }
+            if sh.status.vol_ask_left.load(Ordering::Relaxed) > 0 && now >= vol_next {
+                sh.status.vol_ask_left.fetch_sub(1, Ordering::Relaxed);
+                if let Some(p) = sh.status.vol_ask.load(Ordering::Relaxed).checked_sub(1) {
+                    let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &Message::SetVolume { percent: p as u8 }.encode()));
+                }
+                vol_next = now + 150;
+            }
+            // Report our own level when it changes, and every 1.5 s so a lost packet only delays it.
+            let local = sh.status.vol_local.load(Ordering::Relaxed);
+            if local > 0 && (local != vol_sent || now >= vol_report_at) && !sh.status.snapshot().standby {
+                let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &Message::VolumeLevel { percent: (local - 1) as u8 }.encode()));
+                vol_sent = local;
+                vol_report_at = now + 1500;
             }
             if now >= next {
                 match l.punch() {
@@ -469,6 +513,15 @@ fn recv_loop(sh: &Shared, s: &Settings) -> Result<(), String> {
                     Ok(Some((Message::ConfigRejected { req, .. }, _))) => {
                         sh.status.cfg_ack.store(req, Ordering::Relaxed);
                         sh.status.update(|x| x.note = "The sender refused the codec change".into());
+                    }
+                    _ => {}
+                }
+                match Message::decode(&payload) {
+                    Ok(Some((Message::SetVolume { percent }, _))) => {
+                        sh.status.vol_apply.store(percent as u16 + 1, Ordering::Relaxed);
+                    }
+                    Ok(Some((Message::VolumeLevel { percent }, _))) if sh.status.snapshot().remote_volume != Some(percent) => {
+                        sh.status.update(|x| x.remote_volume = Some(percent));
                     }
                     _ => {}
                 }
