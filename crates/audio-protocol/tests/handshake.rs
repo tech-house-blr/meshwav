@@ -387,3 +387,37 @@ fn fingerprint_is_stable_short_and_forgiving_to_type() {
         assert_eq!(normalize_fingerprint(bad), None, "{bad}");
     }
 }
+
+#[test]
+fn agent_name_reaches_the_receiver_and_old_calls_still_work() {
+    let agent = kp(1);
+    let dev = kp(2);
+    let mut ini = Initiator::new(&dev, None, Some(agent.public)).unwrap();
+    let mut resp = Responder::new(&agent, None).unwrap();
+    resp.read_msg1(&ini.write_msg1().unwrap()).unwrap();
+    let (key, name) = ini.read_msg2_named(&resp.write_msg2_named("liberation").unwrap()).unwrap();
+    assert_eq!((key, name.as_str()), (agent.public, "liberation"));
+    resp.read_msg3(&ini.write_msg3("phone").unwrap()).unwrap();
+
+    // A receiver that only knows `read_msg2` (an older build) still completes against a named agent.
+    let mut old = Initiator::new(&dev, None, Some(agent.public)).unwrap();
+    let mut resp = Responder::new(&agent, None).unwrap();
+    resp.read_msg1(&old.write_msg1().unwrap()).unwrap();
+    assert_eq!(old.read_msg2(&resp.write_msg2_named("liberation").unwrap()).unwrap(), agent.public);
+    let (_, dev_name) = resp.read_msg3(&old.write_msg3("phone").unwrap()).unwrap();
+    assert_eq!(dev_name, "phone");
+
+    // An agent that sends no name (an older build) reads as an empty name.
+    let mut ini = Initiator::new(&dev, None, Some(agent.public)).unwrap();
+    let mut resp = Responder::new(&agent, None).unwrap();
+    resp.read_msg1(&ini.write_msg1().unwrap()).unwrap();
+    assert_eq!(ini.read_msg2_named(&resp.write_msg2().unwrap()).unwrap().1, "");
+
+    // Control characters are stripped and the length is capped.
+    let mut ini = Initiator::new(&dev, None, Some(agent.public)).unwrap();
+    let mut resp = Responder::new(&agent, None).unwrap();
+    resp.read_msg1(&ini.write_msg1().unwrap()).unwrap();
+    let long = format!("a\nb{}", "x".repeat(100));
+    let n = ini.read_msg2_named(&resp.write_msg2_named(&long).unwrap()).unwrap().1;
+    assert!(!n.contains('\n') && n.chars().count() <= 32, "{n:?}");
+}

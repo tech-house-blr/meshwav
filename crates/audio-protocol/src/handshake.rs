@@ -183,15 +183,21 @@ impl Initiator {
 
     /// Returns the agent's static key (already checked against the pin, if any).
     pub fn read_msg2(&mut self, msg: &[u8]) -> Result<PublicKey, ProtocolError> {
+        self.read_msg2_named(msg).map(|(k, _)| k)
+    }
+
+    /// Like `read_msg2`, plus the agent's self-reported (sanitised) name. Empty from an agent that
+    /// sends none. The name is only a label: the key is what identifies the agent.
+    pub fn read_msg2_named(&mut self, msg: &[u8]) -> Result<(PublicKey, String), ProtocolError> {
         let mut buf = [0u8; 256];
-        self.hs.read_message(msg, &mut buf).map_err(|_| ProtocolError::Handshake("msg2"))?;
+        let n = self.hs.read_message(msg, &mut buf).map_err(|_| ProtocolError::Handshake("msg2"))?;
         let remote = static_of(&self.hs)?;
         if let Some(pin) = self.expect {
             if pin != remote {
                 return Err(ProtocolError::PeerMismatch);
             }
         }
-        Ok(remote)
+        Ok((remote, clean_name(&buf[..n])))
     }
 
     pub fn write_msg3(&mut self, device_name: &str) -> Result<Vec<u8>, ProtocolError> {
@@ -232,8 +238,15 @@ impl Responder {
     }
 
     pub fn write_msg2(&mut self) -> Result<Vec<u8>, ProtocolError> {
+        self.write_msg2_named("")
+    }
+
+    /// Message 2 carrying the agent's name (this computer's host name), encrypted like the rest.
+    /// Receivers that predate it decrypt and ignore the payload.
+    pub fn write_msg2_named(&mut self, name: &str) -> Result<Vec<u8>, ProtocolError> {
+        let name = clean_name(name.as_bytes());
         let mut buf = [0u8; 256];
-        let n = self.hs.write_message(&[], &mut buf).map_err(|_| ProtocolError::Handshake("msg2"))?;
+        let n = self.hs.write_message(name.as_bytes(), &mut buf).map_err(|_| ProtocolError::Handshake("msg2"))?;
         Ok(buf[..n].to_vec())
     }
 

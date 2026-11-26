@@ -56,6 +56,8 @@ pub enum Outcome {
 
 pub struct Server {
     identity: Keypair,
+    /// Sent to receivers in handshake message 2 so they can show a name instead of an address.
+    name: String,
     authorized: Vec<Authorized>,
     pairing: Option<PairingWindow>,
     pending: HashMap<(SocketAddr, u32), Pending>,
@@ -66,9 +68,15 @@ pub struct Server {
 }
 
 impl Server {
+    /// The name receivers see for this sender (capped at 32 characters; empty sends none).
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     pub fn new(identity: Keypair, authorized: Vec<Authorized>) -> Self {
         Self {
             identity,
+            name: String::new(),
             authorized,
             pairing: None,
             pending: HashMap::new(),
@@ -200,7 +208,7 @@ impl Server {
         if resp.read_msg1(body).is_err() {
             return Outcome::None;
         }
-        let Ok(msg2) = resp.write_msg2() else { return Outcome::None };
+        let Ok(msg2) = resp.write_msg2_named(&self.name) else { return Outcome::None };
         let reply = handshake::frame(kind, key.1, 2, &msg2);
         self.pending.insert(key, Pending { resp, msg2, kind, created_ms: now_ms });
         Outcome::Reply(reply)
