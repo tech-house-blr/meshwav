@@ -10,6 +10,10 @@ object NativeOut {
     /** Milliseconds from queueing a frame now to it reaching the output; -1 when unknown. */
     external fun queueMs(): Double
     external fun underruns(): Int
+    /** Underrun events (a long stall counts once), unlike [underruns], which counts every empty burst. */
+    external fun stalls(): Int
+    /** Longest time between two writes since the stream started, in ms. */
+    external fun maxGapMs(): Int
     external fun bufferMs(): Int
     external fun close()
 }

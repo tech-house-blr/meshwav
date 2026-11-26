@@ -15,6 +15,9 @@ interface PcmSink {
     fun queueMs(): Double
     fun underruns(): Int
     fun bufferMs(): Int
+    /** Underrun events and the longest gap between writes in ms; -1 when this sink does not track them. */
+    fun stalls(): Int = -1
+    fun maxGapMs(): Int = -1
     fun describe(): String
     fun close()
 
@@ -101,6 +104,8 @@ class AAudioSink(private val context: Context?) : PcmSink {
     override fun queueMs() = NativeOut.queueMs()
     override fun underruns() = NativeOut.underruns()
     override fun bufferMs() = NativeOut.bufferMs()
+    override fun stalls() = NativeOut.stalls()
+    override fun maxGapMs() = NativeOut.maxGapMs()
 
     override fun describe(): String {
         val id = info.getOrNull(2)?.toIntOrNull()
