@@ -190,6 +190,8 @@ struct App {
     confirm_forget: bool,
     tray: Option<TrayHandle>,
     tray_cmds: Receiver<TrayCmd>,
+    /// Quit was chosen from the tray menu, so the close that follows must not be turned into a hide.
+    quitting: bool,
     tray_state: String,
     mode: Mode,
     send: send::SendPanel,
@@ -251,6 +253,7 @@ impl App {
             confirm_forget: false,
             tray,
             tray_cmds: rx,
+            quitting: false,
             tray_state: String::new(),
             mode: Mode::Receive,
             send: send::SendPanel::new(&base),
@@ -502,13 +505,16 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                TrayCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                TrayCmd::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
         self.sync_tray();
         // With "keep running in the tray" on, the close button hides the window. Without a tray
         // there would be no way back, so the window closes as usual.
-        if self.background && self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+        if self.background && !self.quitting && self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(hide_command());
         }
