@@ -33,10 +33,10 @@ Meshwav streams a device's audio to another device you own. A Linux or Windows c
 
 | Role | Linux | Android | Windows |
 |---|---|---|---|
-| Send | Yes (PulseAudio or PipeWire) | Yes (other apps' audio, via Android's audio capture) | Yes (WASAPI loopback of the default output) |
+| Send | Yes (PulseAudio or PipeWire) | Yes (other apps' audio, via Android's audio capture) | Yes (WASAPI loopback of every app) |
 | Receive | Yes | Yes | Yes (WASAPI) |
 
-On Windows the sender captures what the default output plays and turns that output down to 0 while a receiver is connected, then gives the volume back. It does not follow a change of the default output while it runs. Windows 11 on x86_64 is what has been tested.
+On Windows the sender captures the audio of every app before any output's volume is applied, and turns the default output down to 0 while a receiver is connected, then gives the volume back. It keeps working when you switch the default output (the muting moves to the new one). This needs Windows 10 version 2004 or later; on older versions it falls back to a loopback of the default output, which hears nothing on outputs whose volume is applied in software (HDMI monitors, for example) while they are muted. The sender has to run in your own login session, as the login startup does. Windows 11 on x86_64 is what has been tested.
 
 ## Quick start
 
@@ -216,7 +216,7 @@ This includes end-to-end tests that start the real sender and receive from it, a
 
 ## Roadmap
 
-Open work, roughly in order: confirm the native Android output on more phones and over longer runs, then make it the default; measure Windows latency; follow a change of the default output on Windows; code-sign the Windows build; and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
+Open work, roughly in order: confirm the native Android output on more phones and over longer runs, then make it the default; measure Windows latency; code-sign the Windows build; and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
 
 ## Contributing
 

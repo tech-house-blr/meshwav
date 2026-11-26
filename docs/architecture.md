@@ -73,7 +73,7 @@ Android:
 - Native AAudio output (via the Rust `ndk` crate, shared mode, opt-in) exists because AudioTrack's output stage measured 41 to 139 ms; see measurements.md M4f and M4g. AudioTrack stays the default and the fallback.
 
 Library comparison (decisions)
-- Capture on Windows: built with `cpal` (WASAPI loopback of the default output, converted to 48 kHz stereo); the `wasapi` crate stays an option if explicit format control is needed.
+- Capture on Windows: a per-process WASAPI loopback (everything except the sender's own process), called directly through the `windows` crate. It hears the apps before any output's volume, which a loopback of an output device does not on software-volume outputs such as HDMI monitors, and it follows apps across a change of the default output. Where it is unavailable (before Windows 10 2004) it falls back to `cpal` loopback of the default output, converted to 48 kHz stereo.
 - Linux: PipeWire native (monitor of default sink) rather than PulseAudio compat: lower latency and exact format.
 - Control security: Noise (snow) with pinned static keys beats full TLS/PKI: no CA, no certificates, small.
 - Android playback: AudioTrack by default (simple, supports float/24-bit); optional native AAudio output, added after AudioTrack's output delay proved large and erratic.
