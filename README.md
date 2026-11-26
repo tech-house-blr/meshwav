@@ -15,26 +15,28 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
 </p>
 
-Meshwav streams a device's audio to another device you own. A Linux computer or an Android phone can **send** (everything it plays), and a Linux computer or an Android phone can **receive** and play it. Devices find each other on your tailnet, pair once with a six-digit code, and from then on audio is encrypted end to end. Several receivers can be paired; exactly one plays at a time and you choose which.
+Meshwav streams a device's audio to another device you own. A Linux or Windows computer or an Android phone can **send** (everything it plays), and a Linux or Windows computer or an Android phone can **receive** and play it. Devices find each other on your tailnet, pair once with a six-digit code, and from then on audio is encrypted end to end. Several receivers can be paired; exactly one plays at a time and you choose which.
 
-> **Status: early development (v0.5.0 release candidate).** It works end to end on a real tailnet, but the end-to-end latency target is only met with the experimental native Android output, on the one phone tested (see [Performance](#performance)), Windows is not implemented, and the security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
+> **Status: pre-1.0, still being tested.** It works end to end on a real tailnet. The end-to-end latency target is only met with the optional native Android output, which is off by default and was tested on two phones (see [Performance](#performance)). The Windows build is new. The security design has not been independently reviewed. See [SECURITY.md](SECURITY.md) before relying on it.
 
 ## Features
 
-- **Send from Linux or Android, receive on Linux or Android.** One `meshwav` program (window and command line) on Linux, one app on Android with a Receive / Send switch.
+- **Send from Linux, Windows or Android, receive on any of them.** One `meshwav` program (window and command line) on Linux, one portable `meshwav.exe` on Windows, one app on Android with a Receive / Send switch.
 - **Opus or lossless PCM.** Opus at 64 to 256 kbit/s with 5, 10 or 20 ms frames, or raw 48 kHz 16-bit PCM (about 1.7 Mbit/s) for a clean copy of what the sender plays. The receiver can switch live.
 - **Private by construction.** Noise XX / XXpsk3 handshake, pinned device keys, per-session keys, ChaCha20-Poly1305 packets with a replay window. Everything listens and connects on Tailscale (or loopback) addresses only.
 - **Pair with just a code.** The sender shows a six-digit code and a key fingerprint, and the other device finds it on your tailnet by itself. There is no address or key to type; you only confirm that the fingerprint it shows matches the sender's.
 - **Choose where it plays.** Pair several receivers and pick the active one from the window or with `meshwav use`. The others stay connected on standby and never steal the stream.
 - **Resilient playback.** Adaptive jitter buffer, loss concealment and automatic reconnect.
-- **Runs as a service.** The Linux sender runs as a systemd user service and keeps sending when the window is closed.
+- **Runs in the background.** The Linux sender runs as a systemd user service, and the Windows sender runs hidden from your login startup. Both keep sending when the window is closed.
 
 ## Platforms
 
 | Role | Linux | Android | Windows |
 |---|---|---|---|
-| Send | Yes (PulseAudio or PipeWire) | Yes (other apps' audio, via Android's audio capture) | Not yet |
-| Receive | Yes | Yes | Not yet |
+| Send | Yes (PulseAudio or PipeWire) | Yes (other apps' audio, via Android's audio capture) | Yes (WASAPI loopback of the default output) |
+| Receive | Yes | Yes | Yes (WASAPI) |
+
+On Windows the sender captures what the default output plays and turns that output down to 0 while a receiver is connected, then gives the volume back. It does not follow a change of the default output while it runs. Windows 11 on x86_64 is what has been tested.
 
 ## Quick start
 
@@ -47,9 +49,9 @@ sudo apt install ./meshwav_VERSION_ARCH.deb      # Debian, Ubuntu, Raspberry Pi 
 sudo dnf install ./meshwav-VERSION-1.ARCH.rpm    # Fedora (openSUSE: zypper install)
 ```
 
-On Arch, `packaging/PKGBUILD` builds the tagged source (`makepkg -si`). On Android, install the APK attached to the release (signed with the Tech House release key; see [Verifying the Android APK](#verifying-the-android-apk)).
+On Arch, `packaging/PKGBUILD` builds the tagged source (`makepkg -si`). On Windows, download `meshwav-VERSION-windows-x86_64.exe` from the release, check it against the `.sha256` file next to it, and put it anywhere; it needs no installer and no administrator rights. The file is not code-signed, so Windows SmartScreen asks you to confirm on first run (More info, then Run anyway). Its settings live in `%APPDATA%\meshwav`. On Android, install the APK attached to the release (signed with the Tech House release key; see [Verifying the Android APK](#verifying-the-android-apk)).
 
-**2. Send from the computer.** Open **Meshwav** from the application menu, choose **Send**, and set up the sender. Or from a terminal:
+**2. Send from the computer.** Open **Meshwav** from the application menu (on Windows, double-click `meshwav.exe`), choose **Send**, and set up the sender. On Windows this adds it to your login startup. Or from a terminal on Linux:
 
 ```sh
 systemctl --user enable --now meshwav-agent    # start the sender
@@ -106,7 +108,7 @@ meshwav receive forget               # forget the paired sender
 
 ### Configuration
 
-The sender reads `~/.config/meshwav/config.toml` (an example is installed at `/usr/share/doc/meshwav/config.toml.example`):
+The sender reads `~/.config/meshwav/config.toml` (`%APPDATA%\meshwav\config.toml` on Windows; an example is installed at `/usr/share/doc/meshwav/config.toml.example`):
 
 | Key | Meaning |
 |---|---|
@@ -114,8 +116,8 @@ The sender reads `~/.config/meshwav/config.toml` (an example is installed at `/u
 | `codec` | `opus` or `lossless`: what is sent until a receiver asks for something else |
 | `kbps` | Opus bitrate, 64 to 256 (default 160) |
 | `frame_ms` | Opus frame size: 5, 10 or 20 (default 10) |
-| `source` | Capture from this source instead of redirecting the default output |
-| `no_redirect` | Keep playing locally instead of redirecting the output |
+| `source` | Capture from this source instead of redirecting the default output (Linux) |
+| `no_redirect` | Keep playing locally instead of redirecting (on Windows: instead of turning the output down) |
 | `log_level` | `error`, `warn`, `info` or `debug` |
 
 Command-line flags override the file. A typo or bad value stops the sender with the line number. Restart the service after editing the file. A receiver's own choice of codec always wins over the sender's default.
@@ -214,7 +216,7 @@ This includes end-to-end tests that start the real sender and receive from it, a
 
 ## Roadmap
 
-Open work, roughly in order: confirm the native Android output on more phones and over longer runs, then make it the default; measure sender capture latency, Windows capture and a Windows receiver, a signed Android release, and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
+Open work, roughly in order: confirm the native Android output on more phones and over longer runs, then make it the default; measure Windows latency; follow a change of the default output on Windows; code-sign the Windows build; and a hosted apt/dnf repository or an AUR package. See [docs/milestones.md](docs/milestones.md).
 
 ## Contributing
 

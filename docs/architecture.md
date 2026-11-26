@@ -44,7 +44,7 @@ flowchart LR
 - audio-codec: `Encoder`/`Decoder` traits; Opus (libopus bindings), FLAC, PCM.
 - audio-transport: tokio UDP sender, pacing, bounded send queue, stats.
 - discovery: there is no separate crate. `audio-transport` reads online peers from `tailscale status`, and pairing probes them (see protocol.md, "Pairing discovery"). Identity is only ever established by key pinning.
-- desktop-agent: library behind `meshwav send`; capture, encode, send, receiver selection, redirect, config (flat TOML), control socket, logging. Runs as a systemd user service. (A Windows service is not built.)
+- desktop-agent: library behind `meshwav send`; capture, encode, send, receiver selection, redirect, config (flat TOML), control socket, logging. Runs as a systemd user service on Linux; on Windows it runs hidden from the user's login startup (no Windows service), captures with WASAPI loopback through `cpal`, and turns the default output down to 0 while a receiver plays.
 - linux-receiver: library behind `meshwav receive`; handshake, jitter buffer, concealment, Opus and PCM decode, playback through `pacat`.
 - linux-receiver-gui: the window (egui) with the Receive / Send switch, and the tray icon.
 - meshwav: the single binary that dispatches to the window, the sender and the receiver. `meshwav-agent` and `meshwav-receiver` are thin compatibility binaries.
@@ -73,7 +73,7 @@ Android:
 - Native AAudio output (via the Rust `ndk` crate, shared mode, opt-in) exists because AudioTrack's output stage measured 41 to 139 ms; see measurements.md M4f and M4g. AudioTrack stays the default and the fallback.
 
 Library comparison (decisions)
-- Capture on Windows: cpal vs wasapi crate: use `wasapi` for explicit event-driven loopback and format control; cpal as fallback.
+- Capture on Windows: built with `cpal` (WASAPI loopback of the default output, converted to 48 kHz stereo); the `wasapi` crate stays an option if explicit format control is needed.
 - Linux: PipeWire native (monitor of default sink) rather than PulseAudio compat: lower latency and exact format.
 - Control security: Noise (snow) with pinned static keys beats full TLS/PKI: no CA, no certificates, small.
 - Android playback: AudioTrack by default (simple, supports float/24-bit); optional native AAudio output, added after AudioTrack's output delay proved large and erratic.
