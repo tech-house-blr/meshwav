@@ -130,34 +130,68 @@ where
     }
 }
 
+/// How often the capture thread looks at which output is the default.
+const FOLLOW_EVERY: Duration = Duration::from_secs(1);
+
+/// Open a loopback capture of `dev`, feeding `shared`.
+fn open_stream(dev: &cpal::Device, shared: &Arc<Shared>) -> Result<cpal::Stream, String> {
+    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+    let conv = Convert { ch: cfg.channels() as usize, step: cfg.sample_rate().0 as f64 / 48_000.0, t: 0.0, prev: [0.0; 2] };
+    let err = |e| eprintln!("audio capture error: {e}");
+    // Building an input stream on an output device is how cpal asks WASAPI for loopback.
+    let stream = match cfg.sample_format() {
+        SampleFormat::F32 => dev.build_input_stream(&cfg.config(), feed::<f32>(shared.clone(), conv), err, None),
+        SampleFormat::I16 => dev.build_input_stream(&cfg.config(), feed::<i16>(shared.clone(), conv), err, None),
+        SampleFormat::I32 => dev.build_input_stream(&cfg.config(), feed::<i32>(shared.clone(), conv), err, None),
+        f => return Err(format!("unsupported sample format {f:?}")),
+    }
+    .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(stream)
+}
+
 impl Loopback {
     pub fn start() -> Result<Self, String> {
         let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false) });
         let (tx, rx) = mpsc::channel::<Result<(), String>>();
         let s = shared.clone();
         let thread = std::thread::spawn(move || {
-            let built = (|| -> Result<cpal::Stream, String> {
-                let dev = cpal::default_host().default_output_device().ok_or("no audio output device to capture")?;
-                let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
-                let ch = cfg.channels() as usize;
-                let conv = Convert { ch, step: cfg.sample_rate().0 as f64 / 48_000.0, t: 0.0, prev: [0.0; 2] };
-                let err = |e| eprintln!("audio capture error: {e}");
-                // Building an input stream on an output device is how cpal asks WASAPI for loopback.
-                let stream = match cfg.sample_format() {
-                    SampleFormat::F32 => dev.build_input_stream(&cfg.config(), feed::<f32>(s.clone(), conv), err, None),
-                    SampleFormat::I16 => dev.build_input_stream(&cfg.config(), feed::<i16>(s.clone(), conv), err, None),
-                    SampleFormat::I32 => dev.build_input_stream(&cfg.config(), feed::<i32>(s.clone(), conv), err, None),
-                    f => return Err(format!("unsupported sample format {f:?}")),
-                }
-                .map_err(|e| e.to_string())?;
-                stream.play().map_err(|e| e.to_string())?;
-                Ok(stream)
+            let host = cpal::default_host();
+            let built = (|| -> Result<(cpal::Stream, String), String> {
+                let dev = host.default_output_device().ok_or("no audio output device to capture")?;
+                let name = dev.name().unwrap_or_default();
+                Ok((open_stream(&dev, &s)?, name))
             })();
             match built {
-                Ok(stream) => {
+                Ok((mut stream, mut name)) => {
                     let _ = tx.send(Ok(()));
+                    let (mut last_check, mut failed_for) = (Instant::now(), String::new());
                     while !s.stop.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(50));
+                        if last_check.elapsed() < FOLLOW_EVERY {
+                            continue;
+                        }
+                        last_check = Instant::now();
+                        // Follow the default output: capture the one that is playing now.
+                        let Some(dev) = host.default_output_device() else { continue };
+                        let now_name = dev.name().unwrap_or_default();
+                        if now_name == name {
+                            continue;
+                        }
+                        match open_stream(&dev, &s) {
+                            Ok(new) => {
+                                info!("capturing from the new default output: {now_name} (was {name})");
+                                stream = new; // the old stream is dropped here
+                                name = now_name;
+                                failed_for.clear();
+                            }
+                            Err(e) => {
+                                if failed_for != now_name {
+                                    warn!("cannot capture the new default output {now_name} ({e}); staying on {name}");
+                                    failed_for = now_name;
+                                }
+                            }
+                        }
                     }
                     drop(stream);
                 }
