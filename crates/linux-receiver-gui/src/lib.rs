@@ -664,6 +664,10 @@ impl App {
         if self.background != before {
             let _ = std::fs::write(background_path(&self.dir), if self.background { "on" } else { "off" });
         }
+        #[cfg(unix)]
+        if self.background {
+            ui.label(RichText::new("On Linux this takes effect the next time the app starts.").color(MUTED));
+        }
         if self.background && self.tray.is_none() {
             ui.label(RichText::new("No tray icon is available here, so closing will still quit.").color(WARN));
         }
@@ -851,6 +855,14 @@ fn window_icon() -> egui::IconData {
 
 /// Open the window and run until it is closed.
 pub fn run_window() -> eframe::Result {
+    // A Wayland app cannot hide its window or bring a minimised one back, so with "keep running in
+    // the tray" on, the window uses X11 (XWayland), where hiding and showing both work.
+    #[cfg(unix)]
+    if std::env::var_os("DISPLAY").is_some()
+        && std::fs::read_to_string(background_path(&store::default_dir())).is_ok_and(|t| t.trim() == "on")
+    {
+        std::env::remove_var("WAYLAND_DISPLAY");
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([980.0, 700.0]).with_min_inner_size([360.0, 480.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
         ..Default::default()
