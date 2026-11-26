@@ -393,6 +393,8 @@ class StreamReceiver(
     private val captured = HashMap<Long, LongArray>()
 
     private fun playLoop() {
+        // The audio priority Android gives its own mixer threads; Java's MAX_PRIORITY is only a mild nudge.
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Throwable) {}
         val decoder: OpusDecoder
         val sink: PcmSink
         var note = ""
