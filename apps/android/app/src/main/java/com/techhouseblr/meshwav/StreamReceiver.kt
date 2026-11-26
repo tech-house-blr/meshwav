@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong
 object Stats {
     @Volatile var state = "Idle"
     @Volatile var agentKey = ""
+    @Volatile var agentName = ""
     @Volatile var received = 0L
     @Volatile var lost = 0L
     @Volatile var late = 0L
@@ -53,7 +54,7 @@ object Stats {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
         decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0; trackStalls = -1; trackMaxGapMs = -1; trackLateWrites = -1; trackLateStalls = -1; recvLateGaps = 0; recvMaxGapMs = 0
-        kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
+        agentName = ""; kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
         e2eMs = -1.0; e2eNetMs = 0.0; e2eBufMs = 0.0; e2eErrMs = -1.0
     }
 }
@@ -73,6 +74,7 @@ class StreamReceiver(
     private val deviceName: String,
     private val context: Context? = null,
     private val onPaired: (() -> Unit)? = null,
+    private val onName: ((String) -> Unit)? = null,
 ) {
     companion object {
         const val STREAM_ID = 1L
@@ -194,6 +196,8 @@ class StreamReceiver(
                 synchronized(cfg) { cfg.reset() }
                 lastAlive = SystemClock.elapsedRealtime()
                 ackDeadline = lastAlive + PAIRING_ACK_MS
+                Stats.agentName = keys.agentName
+                onName?.invoke(keys.agentName)
                 Stats.agentKey = agentPublic.joinToString("") { "%02x".format(it) }.take(16)
                 Stats.state = if (awaitingAck) "Pairing…" else "Connected, waiting for audio"
                 return true

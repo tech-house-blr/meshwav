@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -27,14 +26,27 @@ class MainActivity : Activity() {
     private lateinit var codeField: EditText
     private lateinit var pairBtn: Button
     private var invites: InviteListener? = null
-    private lateinit var button: Button
+    private lateinit var action: Button
     private lateinit var status: TextView
+    private lateinit var title: TextView
+    private lateinit var subtitle: TextView
+    private lateinit var statsView: TextView
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var store: PairingStore
     private lateinit var sendersBox: LinearLayout
-    private var sendersShown = ""
+    private lateinit var sendersLabel: TextView
+    private lateinit var pairBox: LinearLayout
+    private lateinit var pairToggle: TextView
+    private lateinit var recvMain: LinearLayout
+    private lateinit var recvDetail: LinearLayout
     private lateinit var quality: LinearLayout
+    private var sendersShown = ""
+    private var selected: String? = null
+    private var tab = 0
+
+    private val dp get() = resources.displayMetrics.density
+    private fun px(v: Int) = (v * dp).toInt()
 
     /** What the agent prints when pairing: host, port, its public key and the one-time code. */
     private data class Target(val host: String, val port: Int, val pk: String, val code: String)
@@ -57,65 +69,119 @@ class MainActivity : Activity() {
         super.onCreate(b)
         CrashLog.install(this)
         store = PairingStore(applicationContext)
-        getSharedPreferences("mw", MODE_PRIVATE).edit().remove("pairing").apply() // old shared-key line is obsolete
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        var root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad); setBackgroundColor(SourcePanel.BG) }
-        root.addView(TextView(this).apply { text = "Meshwav"; textSize = 28f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
+        val prefs = getSharedPreferences("mw", MODE_PRIVATE)
+        prefs.edit().remove("pairing").apply() // old shared-key line is obsolete
+        val pad = px(20)
+        val real = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad); setBackgroundColor(Ui.BG) }
+        real.addView(Ui.text(this, "Meshwav", 26f, Ui.TEXT, bold = true))
+
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, px(12), 0, px(12)) }
+        for ((i, name) in listOf("Receive", "Send", "Settings").withIndex()) {
+            val btn = Ui.button(this, name) { setTab(i) }
+            tabBtns.add(btn)
+            tabs.addView(btn, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i > 0) leftMargin = px(8) })
+        }
+        real.addView(tabs)
+
         source = SourcePanel(this)
-        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, pad / 2, 0, pad / 2) }
-        fun seg(t: String, on: () -> Unit) = Button(this).apply {
-            text = t; isAllCaps = false; textSize = 15f; stateListAnimator = null
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(SourcePanel.PANEL); setStroke((1 * resources.displayMetrics.density).toInt(), SourcePanel.LINE) }
-            setOnClickListener { on() }
+        recvBox = buildReceive()
+        settingsBox = buildSettings(prefs)
+        real.addView(recvBox)
+        real.addView(source.view.also { it.visibility = View.GONE })
+        real.addView(settingsBox.also { it.visibility = View.GONE })
+        setContentView(android.widget.ScrollView(this).apply { setBackgroundColor(Ui.BG); isFillViewport = true; addView(real) })
+        setTab(prefs.getInt("tab", if (prefs.getBoolean("send_mode", false)) 1 else 0))
+        CrashLog.last(this)?.let { status.text = "Last crash:\n$it" }
+        requestPermissions(if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.RECORD_AUDIO) else arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        handleIntent(intent)
+        tick()
+    }
+
+    private lateinit var source: SourcePanel
+    private lateinit var recvBox: View
+    private lateinit var settingsBox: View
+    private val tabBtns = ArrayList<Button>()
+
+    private fun setTab(i: Int) {
+        tab = i
+        getSharedPreferences("mw", MODE_PRIVATE).edit().putInt("tab", i).putBoolean("send_mode", i == 1).apply()
+        recvBox.visibility = if (i == 0) View.VISIBLE else View.GONE
+        source.view.visibility = if (i == 1) View.VISIBLE else View.GONE
+        settingsBox.visibility = if (i == 2) View.VISIBLE else View.GONE
+        for ((n, b) in tabBtns.withIndex()) Ui.restyle(b, n == i)
+        if (i == 1) source.start() else { source.stop(); if (i == 0) autoConnect() }
+    }
+
+    /** What the Receive tab shows: a status, the senders, and one button. The pairing steps appear when there is no sender. */
+    private fun buildReceive(): View {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        recvMain = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        title = Ui.text(this, "", 40f, Ui.TEXT, bold = true)
+        subtitle = Ui.text(this, "", 16f, Ui.MUTED).apply { setPadding(0, px(2), 0, px(8)) }
+        status = Ui.text(this, "", 14f, Ui.WARN)
+        recvMain.addView(title); recvMain.addView(subtitle); recvMain.addView(status)
+        action = Ui.button(this, "Start receiving", true) { toggle() }
+        recvMain.addView(action, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
+        sendersLabel = Ui.section(this, "Senders")
+        recvMain.addView(sendersLabel)
+        sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        recvMain.addView(sendersBox)
+        pairToggle = Ui.link(this, "Pair another sender") { pairBox.visibility = if (pairBox.visibility == View.GONE) View.VISIBLE else View.GONE }
+        recvMain.addView(pairToggle)
+
+        pairBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pairBox.addView(Ui.text(this, "Pair a sender", 20f, Ui.TEXT, bold = true).apply { setPadding(0, px(6), 0, px(6)) })
+        for ((n, t) in listOf(
+            "1" to "On the sender, open Send and choose Show pairing code. On a computer, run meshwav pair.",
+            "2" to "Type the 6-digit code here and tap Pair.",
+            "3" to "Check the key fingerprint shown here against the sender's, then confirm.",
+        )) {
+            pairBox.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; setPadding(0, px(4), 0, px(4))
+                addView(Ui.text(this@MainActivity, n, 18f, Ui.ACCENT, bold = true), LinearLayout.LayoutParams(px(24), -2))
+                addView(Ui.text(this@MainActivity, t, 15f, Ui.TEXT), LinearLayout.LayoutParams(0, -2, 1f))
+            })
         }
-        recvBtn = seg("Receive") { setMode(false) }
-        sendBtn = seg("Send") { setMode(true) }
-        modeRow.addView(recvBtn, LinearLayout.LayoutParams(0, (46 * resources.displayMetrics.density).toInt(), 1f))
-        modeRow.addView(sendBtn, LinearLayout.LayoutParams(0, (46 * resources.displayMetrics.density).toInt(), 1f).apply { leftMargin = pad / 2 })
-        root.addView(modeRow)
-        val real = root
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(TextView(this).apply { text = "On the computer choose Send and Show pairing code (or run meshwav pair), then type the 6-digit code here. It is needed once; the pairing is remembered."; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, pad / 2) })
         codeField = EditText(this).apply {
-            hint = "123456"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE); textSize = 30f
+            hint = "123456"; setHintTextColor(Ui.LINE); setTextColor(Ui.TEXT); textSize = 32f; typeface = android.graphics.Typeface.MONOSPACE
             inputType = InputType.TYPE_CLASS_NUMBER; filters = arrayOf(android.text.InputFilter.LengthFilter(6)); letterSpacing = 0.3f
+            backgroundTintList = android.content.res.ColorStateList.valueOf(Ui.ACCENT)
         }
-        root.addView(codeField)
-        pairBtn = Button(this).apply { text = "Pair"; setOnClickListener { pairByCode() } }
-        root.addView(pairBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad / 2 })
+        pairBox.addView(codeField, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(10) })
+        pairBtn = Ui.button(this, "Pair", true) { pairByCode() }
+        pairBox.addView(pairBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
         pairing = EditText(this).apply {
-            hint = "meshwav://pair?host=...&pk=...&code=123456"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
+            hint = "meshwav://pair?host=...&pk=...&code=123456"; setHintTextColor(Ui.MUTED); setTextColor(Ui.TEXT)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 3; visibility = View.GONE
         }
-        root.addView(TextView(this).apply {
-            text = "Use a pairing link instead"; setTextColor(Color.parseColor("#7fd1ae")); setPadding(0, pad / 2, 0, pad / 2)
-            setOnClickListener { pairing.visibility = if (pairing.visibility == View.GONE) View.VISIBLE else View.GONE }
-        })
-        root.addView(pairing)
-        val prefs = getSharedPreferences("mw", MODE_PRIVATE)
-        root.addView(TextView(this).apply { text = "Paired senders"; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, pad, 0, 0) })
-        sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(sendersBox)
-        root.addView(android.widget.CheckBox(this).apply {
-            text = "Reconnect automatically to the default sender"
-            setTextColor(Color.WHITE); isChecked = prefs.getBoolean("auto", true)
-            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("auto", on).apply() }
-        })
+        pairBox.addView(Ui.link(this, "Use a pairing link instead") { pairing.visibility = if (pairing.visibility == View.GONE) View.VISIBLE else View.GONE })
+        pairBox.addView(pairing)
+        recvMain.addView(pairBox)
+
+        recvDetail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        root.addView(recvMain); root.addView(recvDetail)
+        return root
+    }
+
+    private fun buildSettings(prefs: android.content.SharedPreferences): View {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun box(text: String, note: String, on: Boolean, set: (Boolean) -> Unit) {
+            root.addView(android.widget.CheckBox(this).apply {
+                this.text = text; isChecked = on; Ui.tint(this); textSize = 16f
+                setOnCheckedChangeListener { _, v -> set(v) }
+            })
+            root.addView(Ui.text(this, note, 12f).apply { setPadding(px(32), 0, 0, px(8)) })
+        }
+        root.addView(Ui.section(this, "Receiving"))
+        box("Reconnect automatically", "Keeps this phone connected to the default sender so it shows as online.", prefs.getBoolean("auto", true)) { prefs.edit().putBoolean("auto", it).apply() }
         Controls.lowLatency = prefs.getBoolean("low_latency", false)
-        root.addView(android.widget.CheckBox(this).apply {
-            text = "Low latency (smaller buffer; may crackle on weak Wi-Fi; applies on next connect)"
-            setTextColor(Color.WHITE); isChecked = Controls.lowLatency
-            setOnCheckedChangeListener { _, on -> Controls.lowLatency = on; prefs.edit().putBoolean("low_latency", on).apply() }
-        })
+        box("Low latency", "Smaller buffer. May crackle on weak Wi-Fi. Applies on the next start.", Controls.lowLatency) { Controls.lowLatency = it; prefs.edit().putBoolean("low_latency", it).apply() }
         Controls.nativeOutput = prefs.getBoolean("native_output", false)
-        root.addView(android.widget.CheckBox(this).apply {
-            text = "Native audio output (AAudio, experimental; applies on next connect)"
-            setTextColor(Color.WHITE); isChecked = Controls.nativeOutput
-            setOnCheckedChangeListener { _, on -> Controls.nativeOutput = on; prefs.edit().putBoolean("native_output", on).apply() }
-        })
+        box("Native audio output", "AAudio, experimental. Applies on the next start.", Controls.nativeOutput) { Controls.nativeOutput = it; prefs.edit().putBoolean("native_output", it).apply() }
         Controls.desiredKbps = prefs.getInt("kbps", 0).takeIf { it in Controls.kbpsChoices.toList() } ?: 0
         Controls.desiredFrameMs = prefs.getInt("frame_ms", 0).takeIf { it in Controls.frameChoices.toList() } ?: 0
-        root.addView(TextView(this).apply { text = "Encoder (applies live; smaller frames mean lower latency but more packets)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad, 0, 0) })
+        root.addView(Ui.section(this, "Encoder"))
+        root.addView(Ui.text(this, "Applies live. Smaller frames mean lower latency but more packets.", 12f))
         root.addView(choice("Bitrate", listOf("Agent default") + Controls.kbpsChoices.map { "$it kbit/s" }, Controls.kbpsChoices.indexOf(Controls.desiredKbps) + 1) { i ->
             Controls.desiredKbps = if (i == 0) 0 else Controls.kbpsChoices[i - 1]
             prefs.edit().putInt("kbps", Controls.desiredKbps).apply()
@@ -125,42 +191,19 @@ class MainActivity : Activity() {
             prefs.edit().putInt("frame_ms", Controls.desiredFrameMs).apply()
         })
         Controls.desiredCodec = prefs.getInt("codec", 1).takeIf { it == 1 || it == 2 } ?: 1
-        root.addView(TextView(this).apply { text = "Quality (lossless sends the PC audio uncompressed, about 1.7 Mbit/s, always in 5 ms packets; it drops back to Opus if the connection cannot carry it)"; setTextColor(Color.parseColor("#9aa4ae")); setPadding(0, pad / 2, 0, 0) })
+        root.addView(Ui.text(this, "Lossless sends the PC audio uncompressed, about 1.7 Mbit/s, always in 5 ms packets. It drops back to Opus if the link cannot keep up.", 12f).apply { setPadding(0, px(10), 0, 0) })
         quality = choice("Quality", listOf("Opus (compressed)", "Lossless PCM"), Controls.desiredCodec - 1) { i ->
             Controls.desiredCodec = i + 1
             if (i == 1) Stats.qualityNote = ""
             prefs.edit().putInt("codec", Controls.desiredCodec).apply()
         }
         root.addView(quality)
-        button = Button(this).apply { setOnClickListener { toggle() } }
-        root.addView(button, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
-        status = TextView(this).apply { setTextColor(Color.parseColor("#7fd1ae")); textSize = 16f; gravity = Gravity.START; setPadding(0, pad, 0, 0) }
-        root.addView(status)
-        recvBox = root
-        real.addView(recvBox)
-        real.addView(source.view.also { it.visibility = View.GONE })
-        setContentView(android.widget.ScrollView(this).apply { setBackgroundColor(SourcePanel.BG); isFillViewport = true; addView(real) })
-        setMode(getSharedPreferences("mw", MODE_PRIVATE).getBoolean("send_mode", false))
-        CrashLog.last(this)?.let { status.text = "Last crash:\n$it" }
-        requestPermissions(if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.RECORD_AUDIO) else arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-        handleIntent(intent)
-        tick()
-    }
-
-    private lateinit var source: SourcePanel
-    private lateinit var recvBox: View
-    private lateinit var recvBtn: Button
-    private lateinit var sendBtn: Button
-
-    private fun setMode(send: Boolean) {
-        getSharedPreferences("mw", MODE_PRIVATE).edit().putBoolean("send_mode", send).apply()
-        recvBox.visibility = if (send) View.GONE else View.VISIBLE
-        source.view.visibility = if (send) View.VISIBLE else View.GONE
-        for ((b, on) in listOf(recvBtn to !send, sendBtn to send)) {
-            b.setTextColor(if (on) SourcePanel.BG else SourcePanel.TEXT)
-            (b.background as android.graphics.drawable.GradientDrawable).setColor(if (on) SourcePanel.TEAL else SourcePanel.PANEL)
-        }
-        if (send) source.start() else source.stop()
+        root.addView(source.settings)
+        root.addView(Ui.section(this, "Details"))
+        statsView = Ui.text(this, "", 12f, Ui.TEXT, mono = true).apply { visibility = View.GONE }
+        root.addView(Ui.link(this, "Show or hide live statistics") { statsView.visibility = if (statsView.visibility == View.GONE) View.VISIBLE else View.GONE })
+        root.addView(statsView)
+        return root
     }
 
     override fun onActivityResult(req: Int, res: Int, data: Intent?) { source.onResult(req, res, data) }
@@ -282,9 +325,9 @@ class MainActivity : Activity() {
     /** A labelled drop-down. [onPick] fires only for user changes, not for the initial selection. */
     private fun choice(label: String, items: List<String>, selected: Int, onPick: (Int) -> Unit): LinearLayout {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        row.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(TextView(this).apply { text = label; setTextColor(Ui.TEXT) }, LinearLayout.LayoutParams(0, -2, 1f))
         val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, items) {
-            override fun getView(position: Int, v: View?, parent: ViewGroup): View = super.getView(position, v, parent).also { (it as TextView).setTextColor(Color.WHITE) }
+            override fun getView(position: Int, v: View?, parent: ViewGroup): View = super.getView(position, v, parent).also { (it as TextView).setTextColor(Ui.TEXT) }
         }
         val sp = Spinner(this).apply { this.adapter = adapter; setSelection(selected, false) }
         sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -321,43 +364,100 @@ class MainActivity : Activity() {
             "packets over 20 ms apart $recvLateGaps  longest packet gap $recvMaxGapMs ms"
     }
 
-    /** One row per paired sender: connect, make it the automatic one, or forget it. Rebuilt only when the list changes. */
+    private fun activeKey(): String? {
+        if (!PlaybackService.running) return null
+        val k = Stats.agentKey
+        return store.all().firstOrNull { k.isNotEmpty() && it.keyHex.startsWith(k) }?.keyHex ?: store.paired()?.keyHex
+    }
+
+    private fun stateWord(): String {
+        val s = Stats.state
+        return when {
+            !PlaybackService.running -> "Stopped"
+            s == "Playing" -> "Playing"
+            s.startsWith("Standby") -> "Standby"
+            s.startsWith("No audio") -> "Waiting for audio"
+            s.contains("error", true) || s.startsWith("Refused") -> "Problem"
+            else -> "Connecting"
+        }
+    }
+
+    /** Names and state only. Tapping a row opens its details. Rebuilt only when something shown has changed. */
     private fun showSenders() {
         val list = store.all()
         val def = store.defaultKey()
-        val sig = list.joinToString(";") { "${it.keyHex}${it.host}${it.port}" } + def
+        val act = activeKey()
+        val word = stateWord()
+        val sig = list.joinToString(";") { "${it.keyHex}${it.name}" } + def + act + word + selected
         if (sig == sendersShown) return
         sendersShown = sig
         sendersBox.removeAllViews()
-        val dp = resources.displayMetrics.density
-        if (list.isEmpty()) {
-            sendersBox.addView(TextView(this).apply { text = "None yet. Type a pairing code above."; setTextColor(Color.parseColor("#9aa4ae")) })
-            return
-        }
+        val sel = list.firstOrNull { it.keyHex == selected }
+        if (sel == null) selected = null
+        recvMain.visibility = if (sel == null) View.VISIBLE else View.GONE
+        recvDetail.visibility = if (sel == null) View.GONE else View.VISIBLE
+        sendersLabel.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+        pairToggle.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+        if (list.isEmpty()) pairBox.visibility = View.VISIBLE
         for (p in list) {
-            sendersBox.addView(TextView(this).apply {
-                text = "${p.host}  (key ${p.keyHex.take(8)}…)" + if (p.keyHex == def) "  - default" else ""
-                setTextColor(Color.WHITE); setPadding(0, (8 * dp).toInt(), 0, 0)
-            })
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            fun btn(t: String, on: () -> Unit) = Button(this).apply { text = t; isAllCaps = false; setOnClickListener { on() } }
-                .also { row.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
-            btn("Connect") { startReceiving(p.host, p.port, p.keyHex, null) }
-            if (p.keyHex != def) btn("Make default") { store.setDefault(p.keyHex) }
-            btn("Forget") {
-                store.remove(p.keyHex)
-                if (PlaybackService.running) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
-            }
-            sendersBox.addView(row)
+            val on = p.keyHex == act
+            sendersBox.addView(Ui.row(this, p.label, if (on) word else if (p.keyHex == def) "Default" else "", on) { selected = p.keyHex; sendersShown = ""; scrollTop() },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(8) })
         }
+        if (sel != null) showDetail(sel, sel.keyHex == act, word)
+    }
+
+    private fun scrollTop() { (recvBox.parent.parent as? android.widget.ScrollView)?.scrollTo(0, 0) }
+
+    private fun kv(box: LinearLayout, k: String, v: String, mono: Boolean = false) {
+        box.addView(Ui.text(this, k, 13f, Ui.MUTED).apply { setPadding(0, px(12), 0, 0) })
+        box.addView(Ui.text(this, v, 17f, Ui.TEXT, mono = mono))
+    }
+
+    private fun showDetail(p: PairingStore.Paired, on: Boolean, word: String) {
+        val d = recvDetail
+        d.removeAllViews()
+        d.addView(Ui.link(this, "< Senders") { selected = null; sendersShown = "" })
+        d.addView(Ui.text(this, p.label, 34f, Ui.TEXT, bold = true))
+        d.addView(Ui.text(this, if (on) word else "Not in use", 16f, if (on && word == "Playing") Ui.ACCENT else Ui.MUTED))
+        kv(d, "Address", "${p.host}:${p.port}", true)
+        kv(d, "Key fingerprint", Handshake.fingerprintOfHex(p.keyHex) ?: p.keyHex.take(16), true)
+        kv(d, "Default sender", if (p.keyHex == store.defaultKey()) "Yes" else "No")
+        if (!on) d.addView(Ui.button(this, "Listen to this sender", true) { startReceiving(p.host, p.port, p.keyHex, null); selected = null; sendersShown = "" }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(20) })
+        if (p.keyHex != store.defaultKey()) d.addView(Ui.button(this, "Make default") { store.setDefault(p.keyHex); sendersShown = "" }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
+        d.addView(Ui.button(this, "Forget sender") {
+            android.app.AlertDialog.Builder(this).setTitle("Forget ${p.label}?")
+                .setMessage("This phone will stop receiving from it. To use it again, pair it again.")
+                .setPositiveButton("Forget") { _, _ ->
+                    store.remove(p.keyHex)
+                    if (PlaybackService.running && activeKey() == p.keyHex) startService(Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
+                    selected = null; sendersShown = ""
+                }.setNegativeButton("Keep", null).show()
+        }.also { it.setTextColor(Ui.BAD) }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
     }
 
     private fun tick() {
         val wantIdx = Controls.desiredCodec - 1
         if (quality.getChildAt(1).let { (it as Spinner).selectedItemPosition } != wantIdx) (quality.getChildAt(1) as Spinner).setSelection(wantIdx, false)
-        button.text = if (PlaybackService.running) "Disconnect" else "Connect"
+        val running = PlaybackService.running
+        val word = stateWord()
+        val act = activeKey()?.let { k -> store.all().firstOrNull { it.keyHex == k } }
+        title.text = if (store.all().isEmpty()) "Not paired" else word
+        title.setTextColor(when (word) { "Playing" -> Ui.ACCENT; "Problem" -> Ui.BAD; else -> Ui.TEXT })
+        subtitle.text = when {
+            store.all().isEmpty() -> "Pair a sender to start receiving."
+            !running -> "Not receiving."
+            word == "Standby" -> "The sender is playing on another device. Choose this one on the sender."
+            word == "Waiting for audio" -> "Nothing is playing on the sender."
+            else -> "from ${act?.label ?: "Sender"}"
+        }
+        action.visibility = if (store.all().isEmpty()) View.GONE else View.VISIBLE
+        action.text = if (running) "Stop receiving" else "Start receiving"
+        Ui.restyle(action, !running)
         showSenders()
-        if (PlaybackService.running || Stats.state.contains("error", ignoreCase = true)) status.text = statsText()
+        if (Stats.state.contains("error", ignoreCase = true) || Stats.state.startsWith("Refused")) { if (running || status.text.isEmpty()) status.text = Stats.state }
+        else if (running && status.text.toString().let { it.startsWith("Last crash") || it == Stats.state }) status.text = ""
+        if (statsView.visibility == View.VISIBLE) statsView.text = if (running) statsText() else Stats.state
         ui.postDelayed(::tick, 500)
     }
 }

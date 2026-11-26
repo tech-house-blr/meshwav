@@ -8,7 +8,7 @@ import java.nio.ByteBuffer
 import java.security.SecureRandom
 
 /** Keys of one session. [toAgent] seals our packets, [toReceiver] opens the agent's. */
-class SessionKeys(val toAgent: ByteArray, val toReceiver: ByteArray, val agentPublic: ByteArray)
+class SessionKeys(val toAgent: ByteArray, val toReceiver: ByteArray, val agentPublic: ByteArray, val agentName: String = "")
 
 object Handshake {
     const val KIND_XX = 0x10
@@ -114,7 +114,7 @@ object Handshake {
             if (i < 2) Thread.sleep(20)
         }
         val (a, b) = noise.split()
-        return SessionKeys(a, b, noise.remoteStatic)
+        return SessionKeys(a, b, noise.remoteStatic, noise.remoteName)
     }
 }
 
@@ -132,7 +132,9 @@ class PairingStore(context: Context) {
         return k
     }
 
-    data class Paired(val host: String, val port: Int, val agentPublic: ByteArray) {
+    data class Paired(val host: String, val port: Int, val agentPublic: ByteArray, val name: String = "") {
+        /** What to show: the sender's name, or a plain fallback. Never the address. */
+        val label: String get() = name.ifEmpty { "Sender" }
         val keyHex: String get() = agentPublic.joinToString("") { "%02x".format(it) }
     }
 
@@ -141,8 +143,8 @@ class PairingStore(context: Context) {
         migrate()
         return (prefs.getString("senders", "") ?: "").lines().mapNotNull { l ->
             val f = l.split("|")
-            if (f.size != 3 || f[0].length != 64) return@mapNotNull null
-            Paired(f[1], f[2].toIntOrNull() ?: 47900, unhex(f[0]))
+            if (f.size < 3 || f[0].length != 64) return@mapNotNull null
+            Paired(f[1], f[2].toIntOrNull() ?: 47900, unhex(f[0]), f.getOrElse(3) { "" })
         }
     }
 
@@ -161,10 +163,18 @@ class PairingStore(context: Context) {
     fun savePaired(host: String, port: Int, agentPublic: ByteArray, makeDefault: Boolean = false) {
         val list = all().filter { !it.agentPublic.contentEquals(agentPublic) }.toMutableList()
         val keep = all().firstOrNull { it.agentPublic.contentEquals(agentPublic) }
-        list.add(Paired(host, port, agentPublic))
+        list.add(Paired(host, port, agentPublic, keep?.name ?: ""))
         val first = keep == null && all().isEmpty()
         write(list)
         if (makeDefault || first) setDefault(hex(agentPublic))
+    }
+
+    /** Remembers the name a sender reported. Kept as it was if the sender sends none. */
+    fun setName(keyHex: String, name: String) {
+        if (name.isEmpty()) return
+        val list = all()
+        if (list.none { it.keyHex == keyHex && it.name != name }) return
+        write(list.map { if (it.keyHex == keyHex) it.copy(name = name) else it })
     }
 
     fun remove(keyHex: String) {
@@ -176,7 +186,7 @@ class PairingStore(context: Context) {
     fun forget() { prefs.edit().remove("senders").remove("default").remove("host").remove("port").remove("agent_pk").apply() }
 
     private fun write(list: List<Paired>) {
-        prefs.edit().putString("senders", list.joinToString("\n") { "${it.keyHex}|${it.host}|${it.port}" }).apply()
+        prefs.edit().putString("senders", list.joinToString("\n") { "${it.keyHex}|${it.host}|${it.port}|${it.name}" }).apply()
     }
 
     /** Older versions kept a single sender under host / port / agent_pk. */

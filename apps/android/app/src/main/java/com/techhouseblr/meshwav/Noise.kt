@@ -95,6 +95,9 @@ class NoiseInitiator(
         const val NAME_XX = "Noise_XX_25519_ChaChaPoly_SHA256"
         const val NAME_XXPSK3 = "Noise_XXpsk3_25519_ChaChaPoly_SHA256"
         const val MAX_NAME = 32
+
+        /** A label only, never an identity: control characters and anything past 32 characters are dropped. */
+        fun cleanName(raw: ByteArray): String = String(raw, Charsets.UTF_8).filter { !it.isISOControl() && it != '|' }.take(MAX_NAME).trim()
         private val rng = SecureRandom()
     }
 
@@ -106,6 +109,8 @@ class NoiseInitiator(
     private var ePriv = ByteArray(0)
     private var re = ByteArray(0)
     var remoteStatic = ByteArray(0); private set
+    /** The name the agent reported in message 2 (this computer's host name). Empty from an older agent. */
+    var remoteName = ""; private set
 
     init {
         val nb = (if (psk != null) NAME_XXPSK3 else NAME_XX).toByteArray()
@@ -189,7 +194,7 @@ class NoiseInitiator(
         try { mixKey(X25519.dh(ePriv, re)) } catch (e: IllegalArgumentException) { throw HandshakeException("bad agent key", fatal = true) }
         val rs = decryptAndHash(msg.copyOfRange(32, 80))
         try { mixKey(X25519.dh(ePriv, rs)) } catch (e: IllegalArgumentException) { throw HandshakeException("bad agent key", fatal = true) }
-        decryptAndHash(msg.copyOfRange(80, msg.size))
+        remoteName = cleanName(decryptAndHash(msg.copyOfRange(80, msg.size)))
         remoteStatic = rs
         if (expectedRemote != null && !MessageDigest.isEqual(expectedRemote, rs)) {
             throw HandshakeException("The agent's key is not the one this phone paired with. Pair again if you reinstalled the agent.", fatal = true)
