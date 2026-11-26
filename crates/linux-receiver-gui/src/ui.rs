@@ -94,6 +94,13 @@ pub fn device_row(ui: &mut egui::Ui, name: &str, state: &str, active: bool, sele
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A selectable choice. The chosen one is filled with the accent, so its text must be the dark ink.
+pub fn choice<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, value: T, text: &str) -> egui::Response {
+    let on = *current == value;
+    let t = if on { RichText::new(text.to_string()).color(ACCENT_INK) } else { RichText::new(text.to_string()) };
+    ui.selectable_value(current, value, t)
+}
+
 /// A quiet "back" link for the details page in a narrow window.
 pub fn back_link(ui: &mut egui::Ui, text: &str) -> bool {
     ui.add(egui::Button::new(RichText::new(format!("<  {text}")).color(MUTED)).frame(false)).clicked()

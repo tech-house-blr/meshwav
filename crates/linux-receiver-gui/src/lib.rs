@@ -10,7 +10,7 @@ use eframe::egui::{self, Color32, FontId, RichText, TextStyle};
 use meshwav_receiver::sink::{list_outputs, open_default, Gain, Output, Volume};
 use meshwav_receiver::store::{self, Paired};
 use meshwav_receiver::{pair, run, Settings, Snapshot, Status};
-use ui::{back_link, device_row, finish_panes, is_wide, kv, pane, primary, sender_label, split};
+use ui::{back_link, choice, device_row, finish_panes, is_wide, kv, pane, primary, sender_label, split};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -652,10 +652,10 @@ impl App {
         });
         ui.add_space(12.0);
         if running {
-            if ui.button("Stop").clicked() {
+            if ui.button("Stop receiving").clicked() {
                 self.stop();
             }
-        } else if ui.add(primary("Start")).clicked() {
+        } else if ui.add(primary("Resume receiving")).clicked() {
             self.start();
         }
     }
@@ -682,9 +682,9 @@ impl App {
             let label = |d: &str, o: &[Output]| if d.is_empty() { "System default".to_string() } else { o.iter().find(|x| x.name == d).map(|x| x.description.clone()).unwrap_or_else(|| d.to_string()) };
             let before = self.device.clone();
             egui::ComboBox::from_id_salt("output").width(ui.available_width() - 8.0).selected_text(label(&self.device, &self.outputs)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.device, String::new(), "System default");
+                choice(ui, &mut self.device, String::new(), "System default");
                 for o in &self.outputs {
-                    ui.selectable_value(&mut self.device, o.name.clone(), &o.description);
+                    choice(ui, &mut self.device, o.name.clone(), &o.description);
                 }
             });
             if self.device != before {
@@ -702,8 +702,8 @@ impl App {
         ui.label(RichText::new("Quality").color(MUTED));
         ui.horizontal(|ui| {
             let before = self.lossless;
-            ui.selectable_value(&mut self.lossless, false, "Opus");
-            ui.selectable_value(&mut self.lossless, true, "Lossless PCM");
+            choice(ui, &mut self.lossless, false, "Opus");
+            choice(ui, &mut self.lossless, true, "Lossless PCM");
             if self.lossless != before {
                 let _ = std::fs::write(quality_path(&self.dir), if self.lossless { "lossless" } else { "opus" });
                 if let Some(w) = &self.worker {

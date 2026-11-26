@@ -1,7 +1,7 @@
 //! The Send side of the window. The sender itself is the `meshwav-agent` systemd user service; this
 //! panel starts and stops that service and talks to it over its owner-only control socket (the same
 //! one `meshwav devices | use | rename | pair` use). Audio keeps flowing when the window is closed.
-use super::ui::{back_link, device_row, finish_panes, is_wide, key_groups, kv, pane, primary, split, state_label};
+use super::ui::{back_link, choice, device_row, finish_panes, is_wide, key_groups, kv, pane, primary, split, state_label};
 use super::{ACCENT, BAD, MUTED, WARN};
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
@@ -446,8 +446,8 @@ impl SendPanel {
         egui::CollapsingHeader::new(RichText::new("Settings").color(MUTED)).id_salt("send-settings").show(ui, |ui| {
             ui.label(RichText::new("Default quality").color(MUTED));
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.lossless, false, "Opus");
-                ui.selectable_value(&mut self.lossless, true, "Lossless PCM");
+                choice(ui, &mut self.lossless, false, "Opus");
+                choice(ui, &mut self.lossless, true, "Lossless PCM");
             });
             ui.label(RichText::new("What is sent until a receiver asks for something else. A receiver's own quality choice always wins.").color(MUTED));
             if self.lossless {
@@ -462,7 +462,7 @@ impl SendPanel {
                     ui.label(RichText::new("Frame size").color(MUTED));
                     ui.horizontal(|ui| {
                         for ms in [5u32, 10, 20] {
-                            ui.selectable_value(&mut self.frame_ms, ms, format!("{ms} ms"));
+                            choice(ui, &mut self.frame_ms, ms, &format!("{ms} ms"));
                         }
                     });
                 });
