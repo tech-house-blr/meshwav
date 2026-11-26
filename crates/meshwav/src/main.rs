@@ -29,7 +29,24 @@ fn attach_parent_console() {
     };
     unsafe {
         if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
-            return; // started from Explorer or by the window: nothing to attach to
+            // Started from Explorer, the login startup or the window: no console and nowhere to print,
+            // so keep the output in a log file for diagnosing the background sender.
+            let dir = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("meshwav"));
+            if let Some(dir) = dir {
+                let _ = std::fs::create_dir_all(&dir);
+                let log = dir.join("agent.log");
+                // start over when it has grown large, so it never fills the disk
+                if std::fs::metadata(&log).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+                    let _ = std::fs::remove_file(&log);
+                }
+                if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+                    let h = HANDLE(f.as_raw_handle() as isize);
+                    let _ = SetStdHandle(STD_OUTPUT_HANDLE, h);
+                    let _ = SetStdHandle(STD_ERROR_HANDLE, h);
+                    std::mem::forget(f);
+                }
+            }
+            return;
         }
         // A handle the parent redirected (to a file or pipe) is already valid and is kept as it is.
         for (id, name, write) in [(STD_INPUT_HANDLE, "CONIN$", false), (STD_OUTPUT_HANDLE, "CONOUT$", true), (STD_ERROR_HANDLE, "CONOUT$", true)] {
