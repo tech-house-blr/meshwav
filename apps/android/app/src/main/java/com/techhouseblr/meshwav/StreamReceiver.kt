@@ -32,6 +32,8 @@ object Stats {
     @Volatile var trackUnderruns = 0
     @Volatile var trackStalls = -1    // underrun events, -1 = not tracked
     @Volatile var trackLateWrites = -1
+    @Volatile var recvLateGaps = 0     // times more than 20 ms passed between two received packets
+    @Volatile var recvMaxGapMs = 0     // longest time between two received packets
     @Volatile var trackLateStalls = -1
     @Volatile var trackMaxGapMs = -1  // longest gap between two writes to the output
     @Volatile var kbps = 0          // 0 = not known yet
@@ -50,7 +52,7 @@ object Stats {
     fun reset() {
         received = 0; lost = 0; late = 0; duplicates = 0; reordered = 0; trimmed = 0
         underruns = 0; resyncs = 0; reconnects = 0; bufferMs = 0; targetMs = 0; jitterMs = 0.0
-        decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0; trackStalls = -1; trackMaxGapMs = -1; trackLateWrites = -1; trackLateStalls = -1
+        decodeUs = 0.0; trackQueueMs = -1.0; trackBufferMs = 0; trackUnderruns = 0; trackStalls = -1; trackMaxGapMs = -1; trackLateWrites = -1; trackLateStalls = -1; recvLateGaps = 0; recvMaxGapMs = 0
         kbps = 0; frameMs = 0; configNote = ""; lossless = false; qualityNote = ""; output = ""; standby = false
         e2eMs = -1.0; e2eNetMs = 0.0; e2eBufMs = 0.0; e2eErrMs = -1.0
     }
@@ -272,6 +274,9 @@ class StreamReceiver(
     }
 
     private fun recvLoop() {
+        // Like the play thread: if this one is woken late, packets pile up in the socket and arrive as a burst.
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
+        var lastRecvNs = 0L
         val buf = ByteArray(2048)
         val pkt = DatagramPacket(buf, buf.size)
         var lastAudio = SystemClock.elapsedRealtime()
@@ -297,6 +302,13 @@ class StreamReceiver(
             try {
                 socket?.receive(pkt)
                 errors = 0
+                val nowNs = System.nanoTime()
+                if (lastRecvNs != 0L) {
+                    val gapMs = ((nowNs - lastRecvNs) / 1_000_000).toInt()
+                    if (gapMs > Stats.recvMaxGapMs) Stats.recvMaxGapMs = gapMs
+                    if (gapMs > 20) Stats.recvLateGaps++
+                }
+                lastRecvNs = nowNs
             } catch (_: java.net.SocketTimeoutException) {
                 val now = SystemClock.elapsedRealtime()
                 if (awaitingAck && now > ackDeadline) {

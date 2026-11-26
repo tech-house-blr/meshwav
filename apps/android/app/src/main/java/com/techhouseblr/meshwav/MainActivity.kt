@@ -317,7 +317,8 @@ class MainActivity : Activity() {
             "buffer $bufferMs ms (target $targetMs ms)  jitter ${"%.1f".format(jitterMs)} ms\n" +
             "decode ${"%.2f".format(decodeUs / 1000)} ms  output queue ${if (trackQueueMs < 0) "?" else "%.1f".format(trackQueueMs)} ms (buffer $trackBufferMs ms, underruns $trackUnderruns${if (trackStalls >= 0) ", stalls $trackStalls ($trackLateStalls after a late write), writes over 20 ms $trackLateWrites, longest write gap $trackMaxGapMs ms" else ""})\n" +
             e2eText() +
-            "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects"
+            "trimmed $trimmed  underruns $underruns  resyncs $resyncs  reconnects $reconnects\n" +
+            "packets over 20 ms apart $recvLateGaps  longest packet gap $recvMaxGapMs ms"
     }
 
     /** One row per paired sender: connect, make it the automatic one, or forget it. Rebuilt only when the list changes. */
