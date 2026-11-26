@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::collections::VecDeque;
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,8 @@ struct Shared {
     q: Mutex<VecDeque<u8>>,
     ready: Condvar,
     stop: AtomicBool,
+    /// Bytes the loopback has delivered so far (for the debug log).
+    got: AtomicU64,
 }
 
 pub struct Loopback {
@@ -119,6 +121,7 @@ where
         tmp.extend(data.iter().map(|s| s.to_sample::<f32>()));
         bytes.clear();
         conv.push(&tmp, &mut bytes);
+        shared.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         let mut q = shared.q.lock().unwrap();
         q.extend(bytes.iter());
         let over = q.len().saturating_sub(MAX_BYTES);
@@ -152,7 +155,7 @@ fn open_stream(dev: &cpal::Device, shared: &Arc<Shared>) -> Result<cpal::Stream,
 
 impl Loopback {
     pub fn start() -> Result<Self, String> {
-        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false), got: AtomicU64::new(0) });
         let (tx, rx) = mpsc::channel::<Result<(), String>>();
         let s = shared.clone();
         let thread = std::thread::spawn(move || {
@@ -166,8 +169,15 @@ impl Loopback {
                 Ok((mut stream, mut name)) => {
                     let _ = tx.send(Ok(()));
                     let (mut last_check, mut failed_for) = (Instant::now(), String::new());
+                    let (mut last_report, mut last_got) = (Instant::now(), 0u64);
                     while !s.stop.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(50));
+                        if last_report.elapsed() >= Duration::from_secs(10) {
+                            let g = s.got.load(Ordering::Relaxed);
+                            debug!("capture: {} bytes from {name} in the last 10 s", g - last_got);
+                            last_got = g;
+                            last_report = Instant::now();
+                        }
                         if last_check.elapsed() < FOLLOW_EVERY {
                             continue;
                         }
