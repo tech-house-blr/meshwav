@@ -342,9 +342,15 @@ fn open_capture(_source: &str) -> (Box<dyn Read + Send>, Option<std::process::Ch
 /// with nothing to restart it (Linux's systemd retries every 5 s), so it waits up to two minutes.
 fn tailscale_ip_waiting() -> Option<String> {
     #[cfg(windows)]
-    for _ in 0..40 {
+    for n in 0..40 {
         if let Some(ip) = tailscale_ip() {
+            if n > 0 {
+                info!("tailscale is up after {} s", n * 3);
+            }
             return Some(ip);
+        }
+        if n == 0 {
+            info!("tailscale has no address yet; waiting for it (up to 2 min)");
         }
         std::thread::sleep(Duration::from_secs(3));
     }

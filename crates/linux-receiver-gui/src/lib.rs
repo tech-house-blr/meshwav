@@ -484,6 +484,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(22.0))).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Meshwav").heading().strong());
+                ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak().small());
                 ui.add_space(14.0);
                 let mut to = self.mode;
                 ui.selectable_value(&mut to, Mode::Receive, "Receive");
@@ -697,7 +698,7 @@ fn window_icon() -> egui::IconData {
 /// Open the window and run until it is closed.
 pub fn run_window() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title("Meshwav").with_app_id("meshwav"),
+        viewport: egui::ViewportBuilder::default().with_icon(window_icon()).with_inner_size([440.0, 560.0]).with_min_inner_size([400.0, 540.0]).with_title(concat!("Meshwav ", env!("CARGO_PKG_VERSION"))).with_app_id("meshwav"),
         ..Default::default()
     };
     eframe::run_native("Meshwav", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
