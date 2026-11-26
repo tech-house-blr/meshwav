@@ -77,6 +77,8 @@ struct Shared {
     stop: AtomicBool,
     /// Bytes the loopback has delivered so far (for the debug log).
     got: AtomicU64,
+    /// Loudest sample (as 0..32767) since the last debug report.
+    peak: AtomicU64,
 }
 
 pub struct Loopback {
@@ -122,6 +124,8 @@ where
         bytes.clear();
         conv.push(&tmp, &mut bytes);
         shared.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let pk = tmp.iter().fold(0f32, |m, v| m.max(v.abs())) * 32767.0;
+        shared.peak.fetch_max(pk as u64, Ordering::Relaxed);
         let mut q = shared.q.lock().unwrap();
         q.extend(bytes.iter());
         let over = q.len().saturating_sub(MAX_BYTES);
@@ -155,7 +159,7 @@ fn open_stream(dev: &cpal::Device, shared: &Arc<Shared>) -> Result<cpal::Stream,
 
 impl Loopback {
     pub fn start() -> Result<Self, String> {
-        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false), got: AtomicU64::new(0) });
+        let shared = Arc::new(Shared { q: Mutex::new(VecDeque::new()), ready: Condvar::new(), stop: AtomicBool::new(false), got: AtomicU64::new(0), peak: AtomicU64::new(0) });
         let (tx, rx) = mpsc::channel::<Result<(), String>>();
         let s = shared.clone();
         let thread = std::thread::spawn(move || {
@@ -174,7 +178,7 @@ impl Loopback {
                         std::thread::sleep(Duration::from_millis(50));
                         if last_report.elapsed() >= Duration::from_secs(10) {
                             let g = s.got.load(Ordering::Relaxed);
-                            debug!("capture: {} bytes from {name} in the last 10 s", g - last_got);
+                            debug!("capture: {} bytes from {name} in the last 10 s, loudest sample {}", g - last_got, s.peak.swap(0, Ordering::Relaxed));
                             last_got = g;
                             last_report = Instant::now();
                         }
