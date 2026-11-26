@@ -1,4 +1,5 @@
-//! System-audio capture on Windows: WASAPI loopback of the default output, through `cpal`.
+//! System-audio capture on Windows. Preferably a per-process loopback of every app (see
+//! `process_loopback_windows`); where that is unavailable, WASAPI loopback of the default output, through `cpal`.
 //!
 //! The sender reads fixed-size frames of 48 kHz stereo s16le, as `parec` gives them on Linux. Here the
 //! device's own mix format (any rate, any channel count) is converted into that. Loopback delivers
@@ -126,15 +127,20 @@ where
         shared.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         let pk = tmp.iter().fold(0f32, |m, v| m.max(v.abs())) * 32767.0;
         shared.peak.fetch_max(pk as u64, Ordering::Relaxed);
-        let mut q = shared.q.lock().unwrap();
-        q.extend(bytes.iter());
-        let over = q.len().saturating_sub(MAX_BYTES);
-        if over > 0 {
-            q.drain(..over - over % 4);
-        }
-        drop(q);
-        shared.ready.notify_all();
+        push(&shared, &bytes);
     }
+}
+
+/// Queue captured audio for `read`, dropping the oldest if the sender has fallen behind.
+fn push(shared: &Shared, bytes: &[u8]) {
+    let mut q = shared.q.lock().unwrap();
+    q.extend(bytes.iter());
+    let over = q.len().saturating_sub(MAX_BYTES);
+    if over > 0 {
+        q.drain(..over - over % 4);
+    }
+    drop(q);
+    shared.ready.notify_all();
 }
 
 /// How often the capture thread looks at which output is the default.
@@ -163,6 +169,32 @@ impl Loopback {
         let (tx, rx) = mpsc::channel::<Result<(), String>>();
         let s = shared.clone();
         let thread = std::thread::spawn(move || {
+            // Preferred: everything the apps play, before any output's volume (see process_loopback_windows).
+            match crate::process_loopback_windows::open() {
+                Ok(cap) => {
+                    let _ = tx.send(Ok(()));
+                    info!("capturing the audio of every app, whichever output it plays on (per-process loopback)");
+                    let (mut bytes, mut last_report, mut last_got) = (Vec::new(), Instant::now(), 0u64);
+                    while !s.stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(5));
+                        bytes.clear();
+                        let pk = cap.drain(&mut bytes);
+                        if !bytes.is_empty() {
+                            s.got.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                            s.peak.fetch_max(pk as u64, Ordering::Relaxed);
+                            push(&s, &bytes);
+                        }
+                        if last_report.elapsed() >= Duration::from_secs(10) {
+                            let g = s.got.load(Ordering::Relaxed);
+                            debug!("capture: {} bytes in the last 10 s, loudest sample {}", g - last_got, s.peak.swap(0, Ordering::Relaxed));
+                            last_got = g;
+                            last_report = Instant::now();
+                        }
+                    }
+                    return;
+                }
+                Err(e) => warn!("per-process capture is not available ({e}); capturing the default output instead"),
+            }
             let host = cpal::default_host();
             let built = (|| -> Result<(cpal::Stream, String), String> {
                 let dev = host.default_output_device().ok_or("no audio output device to capture")?;
