@@ -10,11 +10,66 @@ use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Never hold more than this much captured audio: if the sender stalls, old audio is dropped, not queued.
 const MAX_BYTES: usize = 48_000 * 4 / 5; // 200 ms
-const SILENCE_AFTER: Duration = Duration::from_millis(10);
+/// Bytes of 48 kHz stereo s16le per second.
+const BYTES_PER_SEC: u128 = 48_000 * 4;
+/// Silence is only made up once the stream is this far behind real time. Loopback delivers a block
+/// about every 10 ms while anything plays, with some jitter, so a smaller margin would insert silence
+/// into audio that is actually flowing.
+const BEHIND_MS: u128 = 20;
+/// A stall longer than this is not made up with a burst of silence; the clock is moved instead.
+const RESET_MS: u128 = 200;
+
+/// Keeps the byte stream on real time. Loopback delivers nothing while the output is idle, but the
+/// sender needs a frame every 5 ms for the receiver's clock, so the gap is filled with exactly as much
+/// silence as real time has passed, no more (more would run the stream fast and make the receiver trim).
+struct Pacer {
+    start: Instant,
+    emitted: u128,
+}
+
+impl Pacer {
+    fn new(now: Instant) -> Self {
+        Self { start: now, emitted: 0 }
+    }
+    fn expected(&self, now: Instant) -> u128 {
+        now.duration_since(self.start).as_micros() * BYTES_PER_SEC / 1_000_000
+    }
+    /// Audio of `n` bytes was handed out.
+    fn sent(&mut self, n: usize, now: Instant) {
+        self.emitted += n as u128;
+        // data that arrived ahead of real time (a backlog): move the clock forward instead of
+        // counting it as owed
+        let ahead = self.emitted.saturating_sub(self.expected(now));
+        if ahead > BYTES_PER_SEC * RESET_MS / 1000 {
+            self.start += Duration::from_micros((ahead * 1_000_000 / BYTES_PER_SEC) as u64);
+        }
+    }
+    /// How many bytes of silence (at most `max`, whole frames) to hand out now; 0 means keep waiting.
+    fn silence_due(&mut self, max: usize, now: Instant) -> usize {
+        let exp = self.expected(now);
+        let behind = exp.saturating_sub(self.emitted);
+        if behind > BYTES_PER_SEC * RESET_MS / 1000 {
+            // after a long stall: restart the clock rather than send seconds of silence at once
+            self.emitted = exp - BYTES_PER_SEC * BEHIND_MS / 1000;
+        }
+        let behind = exp.saturating_sub(self.emitted);
+        if behind < BYTES_PER_SEC * BEHIND_MS / 1000 {
+            return 0;
+        }
+        let n = (behind as usize).min(max);
+        n - n % 4
+    }
+    /// Time to wait before silence could be due.
+    fn wait(&self, now: Instant) -> Duration {
+        let exp = self.expected(now);
+        let need = (BYTES_PER_SEC * BEHIND_MS / 1000 + self.emitted).saturating_sub(exp);
+        Duration::from_micros((need * 1_000_000 / BYTES_PER_SEC) as u64 + 500)
+    }
+}
 
 struct Shared {
     q: Mutex<VecDeque<u8>>,
@@ -25,6 +80,7 @@ struct Shared {
 pub struct Loopback {
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
+    pacer: Pacer,
 }
 
 /// Linear-interpolation converter from any rate and channel count to 48 kHz stereo.
@@ -111,7 +167,7 @@ impl Loopback {
             }
         });
         match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(())) => Ok(Self { shared, thread: Some(thread) }),
+            Ok(Ok(())) => Ok(Self { shared, thread: Some(thread), pacer: Pacer::new(Instant::now()) }),
             Ok(Err(e)) => Err(e),
             Err(_) => Err("the audio capture did not start in 10 s".into()),
         }
@@ -121,20 +177,25 @@ impl Loopback {
 impl Read for Loopback {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut q = self.shared.q.lock().unwrap();
-        if q.is_empty() {
-            let (g, timeout) = self.shared.ready.wait_timeout(q, SILENCE_AFTER).unwrap();
-            q = g;
-            if timeout.timed_out() && q.is_empty() {
-                let n = buf.len().min(48 * 10 * 4); // 10 ms of silence
-                buf[..n].fill(0);
+        loop {
+            if !q.is_empty() {
+                let n = buf.len().min(q.len());
+                for (i, b) in q.drain(..n).enumerate() {
+                    buf[i] = b;
+                }
+                self.pacer.sent(n, Instant::now());
                 return Ok(n);
             }
+            let now = Instant::now();
+            let n = self.pacer.silence_due(buf.len(), now);
+            if n > 0 {
+                buf[..n].fill(0);
+                self.pacer.sent(n, now);
+                return Ok(n);
+            }
+            let (g, _) = self.shared.ready.wait_timeout(q, self.pacer.wait(now)).unwrap();
+            q = g;
         }
-        let n = buf.len().min(q.len());
-        for (i, b) in q.drain(..n).enumerate() {
-            buf[i] = b;
-        }
-        Ok(n)
     }
 }
 
@@ -144,5 +205,60 @@ impl Drop for Loopback {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_output_gets_silence_at_real_time_pace() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        let mut got = 0usize;
+        // 2 s of an idle output, polled every millisecond, one 5 ms frame at a time
+        for ms in 0..2000u64 {
+            let now = t0 + Duration::from_millis(ms);
+            loop {
+                let n = p.silence_due(960, now);
+                if n == 0 {
+                    break;
+                }
+                p.sent(n, now);
+                got += n;
+            }
+        }
+        let secs = got as f64 / 192_000.0;
+        assert!((1.95..=2.0).contains(&secs), "2 s of idle gave {secs} s of silence");
+    }
+
+    #[test]
+    fn flowing_audio_gets_no_silence() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        // real audio arrives every 10 ms (1,920 bytes) with 3 ms of jitter; none of it needs padding
+        for k in 1..300u64 {
+            let now = t0 + Duration::from_millis(k * 10 + (k % 4));
+            assert_eq!(p.silence_due(960, now), 0, "silence inserted into flowing audio at block {k}");
+            p.sent(1920, now);
+        }
+    }
+
+    #[test]
+    fn a_long_stall_is_not_made_up_with_a_burst() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(t0);
+        let now = t0 + Duration::from_secs(5);
+        let mut total = 0;
+        loop {
+            let n = p.silence_due(960, now);
+            if n == 0 {
+                break;
+            }
+            p.sent(n, now);
+            total += n;
+        }
+        assert!(total <= 192_000 / 5, "{total} bytes of silence in one burst");
     }
 }
