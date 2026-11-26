@@ -3,8 +3,8 @@
 Run from the repo root: python3 assets/make_icons.py (needs Pillow)."""
 from PIL import Image, ImageDraw
 
-BG = (0x17, 0x19, 0x1C, 255)
-FG = (0x7F, 0xC4, 0xB0, 255)
+BG = (0x14, 0x16, 0x18, 255)
+FG = (0xC8, 0xFF, 0x2E, 255)
 # The mark on a 108 unit canvas (the Android adaptive icon grid): an M drawn as a waveform.
 PTS = [(32, 72), (32, 38), (54, 62), (76, 38), (76, 72)]
 STROKE = 9
