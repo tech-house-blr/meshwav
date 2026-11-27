@@ -5,6 +5,7 @@ yanked = "deny"
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+allow-wildcard-paths = true   # our own path dependencies carry no version
 
 [sources]
 unknown-registry = "deny"
