@@ -112,6 +112,33 @@ fn clock_us() -> u64 {
 /// One connected receiver. A new successful handshake from the same device replaces its session.
 /// Volume requests from one receiver closer together than this are dropped (a slider drag sends many).
 const VOLUME_MIN_GAP: Duration = Duration::from_millis(30);
+/// Most sealed control messages one receiver may send per second. Normal use is a few per second
+/// (pings, level reports, volume at 33/s while dragging); a flood beyond this is dropped unread.
+const CONTROL_PER_SEC: u32 = 200;
+/// A receiver can ask for the audio or retune the encoder at most this often. Both do real work
+/// (a disk write, an encoder rebuild), and a person cannot usefully do either faster.
+const PLAY_HERE_MIN_GAP: Duration = Duration::from_secs(1);
+const SET_CONFIG_MIN_GAP: Duration = Duration::from_millis(250);
+
+/// Fixed one-second window counter.
+struct Budget {
+    window: Option<Instant>,
+    used: u32,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self { window: None, used: 0 }
+    }
+    fn allow(&mut self, now: Instant, limit: u32) -> bool {
+        if self.window.is_none_or(|w| now.saturating_duration_since(w) >= Duration::from_secs(1)) {
+            self.window = Some(now);
+            self.used = 0;
+        }
+        self.used += 1;
+        self.used <= limit
+    }
+}
 
 struct Session {
     addr: SocketAddr,
@@ -134,6 +161,10 @@ struct Session {
     level: Option<u8>,
     /// When a volume request from this receiver was last forwarded (rate limit).
     vol_fwd_at: Option<Instant>,
+    /// Rate limits for this receiver's control messages.
+    ctl_budget: Budget,
+    play_here_at: Option<Instant>,
+    set_config_at: Option<Instant>,
 }
 
 /// Runtime configuration requests from the receiver. Pure state, so the policy is unit-testable.
@@ -754,6 +785,9 @@ pub fn run(args: Vec<String>) {
                                 closed: false,
                                 level: None,
                                 vol_fwd_at: None,
+                                ctl_budget: Budget::new(),
+                                play_here_at: None,
+                                set_config_at: None,
                             };
                             s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
                             cur.sessions.retain(|x| x.peer != peer);
@@ -780,7 +814,7 @@ pub fn run(args: Vec<String>) {
                         if !s.closed {
                             s.last_seen = Instant::now();
                         }
-                        if h.ptype == PacketType::Control {
+                        if h.ptype == PacketType::Control && s.ctl_budget.allow(Instant::now(), CONTROL_PER_SEC) {
                             if let Ok(Some((msg, _))) = Message::decode(&body) {
                                 if let Message::Ping { t_us } = msg {
                                     // Clock-offset probe: answer at once, for active and standby receivers alike.
@@ -812,12 +846,23 @@ pub fn run(args: Vec<String>) {
                                     }
                                 } else if matches!(msg, Message::PlayHere) {
                                     // Sealed with this receiver's session key, so only a paired device gets here.
-                                    if !s.closed {
+                                    let quick = s.play_here_at.is_some_and(|t| t.elapsed() < PLAY_HERE_MIN_GAP);
+                                    if !s.closed && !quick {
+                                        s.play_here_at = Some(Instant::now());
                                         play_here = Some((s.peer, s.name.clone()));
                                     }
                                 } else if s.closed || !is_active {
                                     // A standby receiver must not retune the shared encoder; it can ask again once active.
-                                } else if let Some(reply) = s.ctl.on_message(msg) {
+                                } else if matches!(msg, Message::SetConfig { .. })
+                                    && s.set_config_at.is_some_and(|t| t.elapsed() < SET_CONFIG_MIN_GAP)
+                                {
+                                    // Too soon after the last retune: dropped, the receiver retries by itself.
+                                } else if let Some(reply) = {
+                                    if matches!(msg, Message::SetConfig { .. }) {
+                                        s.set_config_at = Some(Instant::now());
+                                    }
+                                    s.ctl.on_message(msg)
+                                } {
                                     s.send_control(&reply, &sock);
                                 }
                             }
@@ -1083,6 +1128,18 @@ pub fn run(args: Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn budget_allows_the_limit_then_drops_until_the_next_second() {
+        let mut b = Budget::new();
+        let t0 = Instant::now();
+        for i in 0..CONTROL_PER_SEC {
+            assert!(b.allow(t0, CONTROL_PER_SEC), "message {i} is within the limit");
+        }
+        assert!(!b.allow(t0, CONTROL_PER_SEC));
+        assert!(!b.allow(t0 + Duration::from_millis(900), CONTROL_PER_SEC));
+        assert!(b.allow(t0 + Duration::from_millis(1000), CONTROL_PER_SEC), "a new second starts a new window");
+    }
+
     use super::*;
 
     fn set(req: u16, kbps: u32, frame_ms: u8) -> Message {
