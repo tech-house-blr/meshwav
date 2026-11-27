@@ -29,8 +29,9 @@ impl ClockSync {
     /// Assumes the answer was made half way through the round trip (error at most half the round trip).
     pub fn on_pong(&mut self, echo_us: u64, agent_us: u64, now_us: u64) {
         let Some(rtt) = now_us.checked_sub(echo_us) else { return };
-        let mid_local = echo_us as i64 + (rtt / 2) as i64;
-        self.samples.push_back((mid_local - agent_us as i64, rtt));
+        // Peer-supplied values can be anything; saturate rather than overflow.
+        let mid_local = (echo_us as i64).saturating_add((rtt / 2).min(i64::MAX as u64) as i64);
+        self.samples.push_back((mid_local.saturating_sub(agent_us.min(i64::MAX as u64) as i64), rtt));
         if self.samples.len() > KEEP { self.samples.pop_front(); }
     }
 
@@ -50,7 +51,7 @@ impl ClockSync {
         let (offset, _) = self.best()?;
         let (ref_ts, ref_agent) = self.timeref?;
         let dts = i64::from(ts.wrapping_sub(ref_ts) as i32); // signed, survives the 32-bit wrap
-        Some(ref_agent as i64 + dts * 1_000_000 / RATE + offset)
+        Some((ref_agent.min(i64::MAX as u64) as i64).saturating_add(dts * 1_000_000 / RATE).saturating_add(offset))
     }
 
     /// Forget everything (new connection: the agent may have restarted, so its clock too).
