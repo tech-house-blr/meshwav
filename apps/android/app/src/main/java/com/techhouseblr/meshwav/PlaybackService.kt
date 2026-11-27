@@ -20,6 +20,8 @@ class PlaybackService : Service() {
         @Volatile var userStopped = false
         /** Asks the running receiver to take the audio from the sender; null while nothing is running. */
         @Volatile var playHere: (() -> Unit)? = null
+        /** Asks the device that is playing to use this level (0..100); null while nothing is running. */
+        @Volatile var setRemoteVolume: ((Int) -> Unit)? = null
     }
 
     private var receiver: StreamReceiver? = null
@@ -66,14 +68,14 @@ class PlaybackService : Service() {
             applicationContext,
             onPaired = { store.savePaired(host, port, agentPk, makeDefault = code != null); store.setName(pkHex, Stats.agentName) },
             onName = { store.setName(pkHex, it) },
-        ).also { r -> r.start(); playHere = { r.playHere() } }
+        ).also { r -> r.start(); playHere = { r.playHere() }; setRemoteVolume = { p -> r.setRemoteVolume(p) } }
         if (code == null) store.savePaired(host, port, agentPk) // already paired: keep it current
         running = true
         return START_STICKY
     }
 
     private fun teardown() {
-        playHere = null
+        playHere = null; setRemoteVolume = null
         receiver?.stop(); receiver = null
         wake?.let { if (it.isHeld) it.release() }; wifi?.let { if (it.isHeld) it.release() }
         running = false

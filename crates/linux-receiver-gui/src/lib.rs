@@ -180,6 +180,10 @@ struct App {
     worker: Option<Worker>,
     volume: Arc<Volume>,
     slider: u32,
+    /// Slider position for the device that is playing, while this one is on standby.
+    remote_slider: u32,
+    /// When the user last moved the remote slider; the relayed level is ignored for a moment after.
+    remote_touched: Option<std::time::Instant>,
     outputs: Vec<Output>,
     device: String,
     /// Ask the sender for lossless PCM instead of Opus (applies live, remembered).
@@ -244,6 +248,8 @@ impl App {
             worker: None,
             volume: Volume::new(start_volume),
             slider: start_volume,
+            remote_slider: 0,
+            remote_touched: None,
             outputs: list_outputs(),
             device,
             lossless,
@@ -795,14 +801,38 @@ impl App {
             self.detail_open = true;
         }
         ui.add_space(20.0);
+        // Another device asked this one to change its level, and we tell the sender ours while we play.
+        if let Some(w) = &self.worker {
+            if let Some(p) = w.status.take_volume_request() {
+                self.slider = p;
+                self.volume.set(p);
+            }
+            w.status.report_volume(self.volume.percent());
+        }
+        // On standby with a playing device that reports its level, the slider controls that device.
+        let remote = if running && snap.standby { snap.remote_volume } else { None };
+        let label = if remote.is_some() { "Volume on the playing device" } else { "Volume" };
+        if let Some(r) = remote {
+            if self.remote_touched.is_none_or(|t| t.elapsed() > std::time::Duration::from_millis(800)) {
+                self.remote_slider = r as u32;
+            }
+        }
+        let shown = if remote.is_some() { self.remote_slider } else { self.slider };
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Volume").color(MUTED));
+            ui.label(RichText::new(label).color(MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("{}%", self.slider)).monospace().size(18.0));
+                ui.label(RichText::new(format!("{shown}%")).monospace().size(18.0));
             });
         });
         ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(120.0);
-        if ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false)).changed() {
+        if remote.is_some() {
+            if ui.add(egui::Slider::new(&mut self.remote_slider, 0..=100).show_value(false)).changed() {
+                self.remote_touched = Some(std::time::Instant::now());
+                if let Some(w) = &self.worker {
+                    w.status.set_remote_volume(self.remote_slider);
+                }
+            }
+        } else if ui.add(egui::Slider::new(&mut self.slider, 0..=100).show_value(false)).changed() {
             self.volume.set(self.slider);
         }
         ui.add_space(18.0);

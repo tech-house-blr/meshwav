@@ -200,6 +200,9 @@ fn samples() -> Vec<Message> {
         Message::TimeRef { ts: u32::MAX, t_us: u64::MAX },
         Message::PlayHere,
         Message::PlayHereSupported,
+        Message::SetVolume { percent: 0 },
+        Message::SetVolume { percent: 100 },
+        Message::VolumeLevel { percent: 37 },
         Message::Ping { t_us: 12345 },
         Message::Pong { echo_us: 1, t_us: 2 },
     ]
@@ -336,6 +339,8 @@ fn runtime_config_messages_have_fixed_wire_bytes() {
     assert_eq!(hex(Message::TimeRef { ts: 300, t_us: 0x0102030405060708 }), "000d0f0000012c0102030405060708");
     assert_eq!(hex(Message::PlayHere), "000110");
     assert_eq!(hex(Message::PlayHereSupported), "000111");
+    assert_eq!(hex(Message::SetVolume { percent: 50 }), "00021232");
+    assert_eq!(hex(Message::VolumeLevel { percent: 100 }), "00021364");
 }
 
 #[test]
@@ -348,4 +353,12 @@ fn play_here_carries_no_payload() {
     // A byte after the type is trailing garbage, so a peer cannot smuggle data through it.
     assert!(Message::decode(&[0, 2, 16, 0]).is_err());
     assert!(Message::decode(&[0, 2, 17, 0]).is_err());
+}
+
+#[test]
+fn volume_messages_reject_values_over_100() {
+    assert!(Message::decode(&[0, 2, 18, 101]).is_err());
+    assert!(Message::decode(&[0, 2, 19, 255]).is_err());
+    assert!(Message::decode(&[0, 1, 18]).is_err());
+    assert!(Message::decode(&[0, 3, 19, 5, 5]).is_err());
 }

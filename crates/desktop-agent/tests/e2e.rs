@@ -611,6 +611,52 @@ fn a_standby_receiver_can_ask_for_the_audio_and_it_sticks() {
 }
 
 #[test]
+fn volume_requests_reach_only_the_playing_receiver() {
+    let dir = workdir("volume");
+    let port = free_port();
+    let mut agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    assert!(!seqs(&la.pump(500)).is_empty());
+    writeln!(agent.stdin, "pair").unwrap();
+    agent.stdin.flush().unwrap();
+    let (_, code2) = agent.pairing();
+    let db = dial(port, &kb, pk, Some(pairing_psk(&pk, &code2)), 2).unwrap();
+    let mut lb = Link::new(&db);
+    lb.pump(500);
+
+    // A plays and reports 40%; the standby device B is told
+    la.send(&Message::VolumeLevel { percent: 40 });
+    la.pump(200);
+    let eb = lb.pump(2000);
+    assert!(eb.iter().any(|e| matches!(e, Ev::Ctl(Message::VolumeLevel { percent: 40 }))), "standby is told the level");
+
+    // B asks for 70% and only A receives it
+    lb.send(&Message::SetVolume { percent: 70 });
+    let (ea, eb) = (la.pump(800), lb.pump(300));
+    assert!(ea.iter().any(|e| matches!(e, Ev::Ctl(Message::SetVolume { percent: 70 }))), "the playing device gets the request");
+    assert!(!eb.iter().any(|e| matches!(e, Ev::Ctl(Message::SetVolume { .. }))), "the asker does not get it back");
+
+    // the playing device's own request is not echoed to itself, and a stranger is ignored
+    let stranger = Keypair::generate();
+    if let Some(ds) = dial(port, &stranger, pk, None, 3) {
+        let mut ls = Link::new(&ds);
+        ls.send(&Message::SetVolume { percent: 5 });
+        ls.pump(300);
+    }
+    let ea = la.pump(500);
+    assert!(!ea.iter().any(|e| matches!(e, Ev::Ctl(Message::SetVolume { percent: 5 }))), "a stranger cannot set the volume");
+
+    // a level from the standby device is ignored: B keeps seeing A's level
+    lb.send(&Message::VolumeLevel { percent: 99 });
+    lb.pump(200);
+    let eb = lb.pump(2000);
+    assert!(!eb.iter().any(|e| matches!(e, Ev::Ctl(Message::VolumeLevel { percent: 99 }))), "only the playing device sets the level");
+}
+
+#[test]
 fn chosen_receiver_survives_an_agent_restart() {
     let dir = workdir("remember");
     let port = free_port();

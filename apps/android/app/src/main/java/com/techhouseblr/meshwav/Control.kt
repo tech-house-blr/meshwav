@@ -28,6 +28,8 @@ object ControlWire {
     const val TYPE_ACTIVE_STATE = 14
     const val TYPE_PLAY_HERE = 16
     const val TYPE_PLAY_HERE_SUPPORTED = 17
+    const val TYPE_SET_VOLUME = 18
+    const val TYPE_VOLUME_LEVEL = 19
     const val REJECT_BITRATE = 1
     const val REJECT_FRAME = 2
     const val REJECT_ENCODER = 3
@@ -48,6 +50,10 @@ object ControlWire {
         data class Active(val active: Boolean) : Msg()
         /** The agent can switch the audio to this device when asked. */
         object PlayHereSupported : Msg()
+        /** The sender relays a request to set this device's output level (0..100). */
+        data class SetVolume(val percent: Int) : Msg()
+        /** The sender relays the level (0..100) of the device that is playing. */
+        data class VolumeLevel(val percent: Int) : Msg()
         /** Answer to our Ping: our own send time echoed, and the agent's clock (microseconds) when it answered. */
         data class Pong(val echoUs: Long, val agentUs: Long) : Msg()
         /** The audio frame stamped `ts` was captured at agent-clock time `agentUs`. */
@@ -57,10 +63,16 @@ object ControlWire {
     /** Clock probe: the agent answers with a Pong carrying its own clock. */
     fun encodePing(tUs: Long): ByteArray = ByteBuffer.allocate(2 + 1 + 8).putShort(9).put(TYPE_PING.toByte()).putLong(tUs).array()
 
-    /** Goodbye: tells the agent to stop and give the PC's audio output back at once. */
     /** Ask the agent to send the audio to this device and keep doing so. */
     fun encodePlayHere(): ByteArray = ByteBuffer.allocate(3).putShort(1).put(TYPE_PLAY_HERE.toByte()).array()
 
+    /** Ask the device that is playing to use this level (0..100). */
+    fun encodeSetVolume(percent: Int): ByteArray = ByteBuffer.allocate(4).putShort(2).put(TYPE_SET_VOLUME.toByte()).put(percent.coerceIn(0, 100).toByte()).array()
+
+    /** Tell the agent this device's level (0..100) while it plays. */
+    fun encodeVolumeLevel(percent: Int): ByteArray = ByteBuffer.allocate(4).putShort(2).put(TYPE_VOLUME_LEVEL.toByte()).put(percent.coerceIn(0, 100).toByte()).array()
+
+    /** Goodbye: tells the agent to stop and give the PC's audio output back at once. */
     fun encodeBye(): ByteArray = ByteBuffer.allocate(4).putShort(2).put(TYPE_BYE.toByte()).put(0).array()
 
     fun encodeSetConfig(req: Int, kbps: Int, frameMs: Int, codec: Int = 0): ByteArray {
@@ -80,6 +92,8 @@ object ControlWire {
             TYPE_CONFIG_REJECTED -> if (len == 4) Msg.Rejected(b.short.toInt() and 0xffff, b.get().toInt() and 0xff) else null
             TYPE_ACTIVE_STATE -> if (len == 2) when (b.get().toInt() and 0xff) { 0 -> Msg.Active(false); 1 -> Msg.Active(true); else -> null } else null
             TYPE_PLAY_HERE_SUPPORTED -> if (len == 1) Msg.PlayHereSupported else null
+            TYPE_SET_VOLUME -> if (len == 2) b.get().toInt().let { if (it in 0..100) Msg.SetVolume(it) else null } else null
+            TYPE_VOLUME_LEVEL -> if (len == 2) b.get().toInt().let { if (it in 0..100) Msg.VolumeLevel(it) else null } else null
             TYPE_PONG -> if (len == 17) Msg.Pong(b.long, b.long) else null
             TYPE_TIME_REF -> if (len == 13) Msg.TimeRef(b.int.toLong() and 0xffffffffL, b.long) else null
             TYPE_SET_CONFIG -> if (len == 9) Msg.SetConfig(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null

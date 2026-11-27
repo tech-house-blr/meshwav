@@ -110,6 +110,9 @@ fn clock_us() -> u64 {
 }
 
 /// One connected receiver. A new successful handshake from the same device replaces its session.
+/// Volume requests from one receiver closer together than this are dropped (a slider drag sends many).
+const VOLUME_MIN_GAP: Duration = Duration::from_millis(30);
+
 struct Session {
     addr: SocketAddr,
     peer: [u8; 32],
@@ -127,6 +130,10 @@ struct Session {
     ctl: ControlState,
     /// The receiver said goodbye: ignore its packets until a new handshake replaces this session.
     closed: bool,
+    /// Output level this receiver last reported while it was active (`None` = it cannot report one).
+    level: Option<u8>,
+    /// When a volume request from this receiver was last forwarded (rate limit).
+    vol_fwd_at: Option<Instant>,
 }
 
 /// Runtime configuration requests from the receiver. Pure state, so the policy is unit-testable.
@@ -231,8 +238,13 @@ impl Fleet {
     fn keepalive(&mut self, sock: &UdpSocket) {
         self.update(sock);
         let active = self.active;
+        // What the playing receiver last reported, so the others can show and change it.
+        let level = self.sessions.iter().find(|s| Some(s.peer) == active && s.online()).and_then(|s| s.level);
         for s in self.sessions.iter_mut().filter(|s| s.online()) {
             s.send_keepalive(sock);
+            if let (Some(percent), false) = (level, Some(s.peer) == active) {
+                s.send_control(&Message::VolumeLevel { percent }, sock);
+            }
             s.send_control(&Message::ActiveState { active: Some(s.peer) == active }, sock);
             s.send_control(&Message::PlayHereSupported, sock);
         }
@@ -733,6 +745,8 @@ pub fn run(args: Vec<String>) {
                                 ctl_opener: Opener::new(&keys.to_agent, Direction::ReceiverToAgent, CONTROL_STREAM),
                                 ctl: ControlState::default(),
                                 closed: false,
+                                level: None,
+                                vol_fwd_at: None,
                             };
                             s.send_keepalive(&sock); // doubles as the receiver's pairing/handshake confirmation
                             cur.sessions.retain(|x| x.peer != peer);
@@ -749,6 +763,7 @@ pub fn run(args: Vec<String>) {
                     let is_active = Some(f.sessions[i].peer) == active;
                     let others_online = f.sessions.iter().enumerate().any(|(j, s)| j != i && s.online());
                     let mut play_here = None;
+                    let mut set_volume = None;
                     let s = &mut f.sessions[i];
                     if let Ok((h, _)) = s.opener.open(d) {
                         if h.ptype == PacketType::Punch && !s.closed {
@@ -776,6 +791,18 @@ pub fn run(args: Vec<String>) {
                                         BYE.store(true, Ordering::SeqCst);
                                     }
                                     info!("receiver '{}' said goodbye", s.name);
+                                } else if let Message::SetVolume { percent } = msg {
+                                    // Sealed, so paired devices only. Forwarded to whoever is playing, below.
+                                    let quick = s.vol_fwd_at.is_some_and(|t| t.elapsed() < VOLUME_MIN_GAP);
+                                    if !s.closed && !quick {
+                                        s.vol_fwd_at = Some(Instant::now());
+                                        set_volume = Some(percent);
+                                    }
+                                } else if let Message::VolumeLevel { percent } = msg {
+                                    // Only the playing receiver's level means anything.
+                                    if !s.closed && is_active {
+                                        s.level = Some(percent);
+                                    }
                                 } else if matches!(msg, Message::PlayHere) {
                                     // Sealed with this receiver's session key, so only a paired device gets here.
                                     if !s.closed {
@@ -786,6 +813,15 @@ pub fn run(args: Vec<String>) {
                                 } else if let Some(reply) = s.ctl.on_message(msg) {
                                     s.send_control(&reply, &sock);
                                 }
+                            }
+                        }
+                    }
+                    if let Some(percent) = set_volume {
+                        let sock2 = &sock;
+                        if let Some(a) = f.sessions.iter_mut().find(|x| Some(x.peer) == active && x.online() && !x.closed) {
+                            if a.level.is_some() {
+                                a.send_control(&Message::SetVolume { percent }, sock2);
+                                a.level = Some(percent); // so the others see it at the next keepalive
                             }
                         }
                     }

@@ -28,6 +28,9 @@ class MainActivity : Activity() {
     private var invites: InviteListener? = null
     private lateinit var action: Button
     private lateinit var playHereBtn: Button
+    private var remoteVolTouched = 0L
+    private lateinit var remoteVolLabel: TextView
+    private lateinit var remoteVolBar: android.widget.SeekBar
     private lateinit var status: TextView
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
@@ -125,6 +128,18 @@ class MainActivity : Activity() {
         recvMain.addView(action, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(12) })
         playHereBtn = Ui.button(this, "Play here", true) { PlaybackService.playHere?.invoke() }
         recvMain.addView(playHereBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
+        remoteVolLabel = Ui.text(this, "", 14f, Ui.MUTED).apply { setPadding(0, px(16), 0, px(4)) }
+        remoteVolBar = android.widget.SeekBar(this).apply {
+            max = 100
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: android.widget.SeekBar, p: Int, fromUser: Boolean) {
+                    if (fromUser) { remoteVolTouched = android.os.SystemClock.elapsedRealtime(); PlaybackService.setRemoteVolume?.invoke(p); remoteVolLabel.text = "Volume on the playing device  $p%" }
+                }
+                override fun onStartTrackingTouch(s: android.widget.SeekBar) { remoteVolTouched = android.os.SystemClock.elapsedRealtime() }
+                override fun onStopTrackingTouch(s: android.widget.SeekBar) { remoteVolTouched = android.os.SystemClock.elapsedRealtime() }
+            })
+        }
+        recvMain.addView(remoteVolLabel); recvMain.addView(remoteVolBar)
         sendersLabel = Ui.section(this, "Senders")
         recvMain.addView(sendersLabel)
         sendersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -453,6 +468,13 @@ class MainActivity : Activity() {
             word == "Standby" -> if (Stats.canPlayHere) "The sender is playing on another device. Tap Play here to move it to this phone." else "The sender is playing on another device. Choose this one on the sender."
             word == "Waiting for audio" -> "Nothing is playing on the sender."
             else -> "from ${act?.label ?: "Sender"}"
+        }
+        val showVol = running && word == "Standby" && Stats.remoteVolume >= 0
+        remoteVolLabel.visibility = if (showVol) View.VISIBLE else View.GONE
+        remoteVolBar.visibility = if (showVol) View.VISIBLE else View.GONE
+        if (showVol && android.os.SystemClock.elapsedRealtime() - remoteVolTouched > 800) {
+            remoteVolBar.progress = Stats.remoteVolume
+            remoteVolLabel.text = "Volume on the playing device  ${Stats.remoteVolume}%"
         }
         playHereBtn.visibility = if (running && word == "Standby" && Stats.canPlayHere) View.VISIBLE else View.GONE
         action.visibility = if (store.all().isEmpty()) View.GONE else View.VISIBLE

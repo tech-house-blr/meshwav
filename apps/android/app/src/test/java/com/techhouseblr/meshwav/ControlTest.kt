@@ -31,6 +31,12 @@ class ControlTest {
         assertEquals(ControlWire.Msg.Active(false), ControlWire.decode(hex("00020e00")))
         assertEquals(ControlWire.Msg.PlayHereSupported, ControlWire.decode(hex("000111")))
         assertNull(ControlWire.decode(hex("00021100")))
+        assertEquals(ControlWire.Msg.SetVolume(50), ControlWire.decode(hex("00021232")))
+        assertEquals(ControlWire.Msg.VolumeLevel(100), ControlWire.decode(hex("00021364")))
+        assertNull(ControlWire.decode(hex("00021265")))
+        assertNull(ControlWire.decode(hex("000213ff")))
+        assertEquals("00021232", ControlWire.encodeSetVolume(50).joinToString("") { "%02x".format(it) })
+        assertEquals("00021364", ControlWire.encodeVolumeLevel(100).joinToString("") { "%02x".format(it) })
         assertEquals("000110", ControlWire.encodePlayHere().joinToString("") { "%02x".format(it) })
         assertNull(ControlWire.decode(hex("00020e02")))      // not a bool
         assertNull(ControlWire.decode(hex("00030e0100")))    // wrong length
