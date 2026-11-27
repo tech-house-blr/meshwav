@@ -86,6 +86,8 @@ class MainActivity : Activity() {
             tabs.addView(btn, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i > 0) leftMargin = px(8) })
         }
         real.addView(tabs)
+        lockNote = Ui.text(this, "", 13f, Ui.MUTED).apply { visibility = View.GONE; setPadding(0, 0, 0, px(8)) }
+        real.addView(lockNote)
 
         source = SourcePanel(this)
         recvBox = buildReceive()
@@ -105,8 +107,31 @@ class MainActivity : Activity() {
     private lateinit var recvBox: View
     private lateinit var settingsBox: View
     private val tabBtns = ArrayList<Button>()
+    private lateinit var lockNote: TextView
 
-    private fun setTab(i: Int) {
+    /** Receiving and sending exclude each other: the other tab stays disabled until this side is stopped. */
+    private fun updateTabLocks() {
+        val sending = SpikeService.link.isNotEmpty()
+        val receiving = PlaybackService.running
+        val lockRecv = sending && tab != 0
+        val lockSend = receiving && tab != 1
+        tabBtns[0].isEnabled = !lockRecv; tabBtns[0].alpha = if (lockRecv) 0.4f else 1f
+        tabBtns[1].isEnabled = !lockSend; tabBtns[1].alpha = if (lockSend) 0.4f else 1f
+        lockNote.text = when {
+            lockRecv -> "Stop sending to use Receive."
+            lockSend -> "Stop receiving to use Send."
+            else -> ""
+        }
+        lockNote.visibility = if (lockNote.text.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun setTab(want: Int) {
+        // Refuse a tab whose other side is busy (also when restoring the last tab at start).
+        val i = when {
+            want == 0 && SpikeService.link.isNotEmpty() -> 1
+            want == 1 && PlaybackService.running -> 0
+            else -> want
+        }
         tab = i
         getSharedPreferences("mw", MODE_PRIVATE).edit().putInt("tab", i).putBoolean("send_mode", i == 1).apply()
         recvBox.visibility = if (i == 0) View.VISIBLE else View.GONE
@@ -484,6 +509,7 @@ class MainActivity : Activity() {
         if (Stats.state.contains("error", ignoreCase = true) || Stats.state.startsWith("Refused")) { if (running || status.text.isEmpty()) status.text = Stats.state }
         else if (running && status.text.toString().let { it.startsWith("Last crash") || it == Stats.state }) status.text = ""
         if (statsView.visibility == View.VISIBLE) statsView.text = if (running) statsText() else Stats.state
+        updateTabLocks()
         ui.postDelayed(::tick, 500)
     }
 }

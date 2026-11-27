@@ -69,6 +69,8 @@ pub struct Status {
     vol_apply: std::sync::atomic::AtomicU16,
     /// This device's own level, reported to the sender while it plays. 0 = this device cannot report one.
     vol_local: std::sync::atomic::AtomicU16,
+    /// The output volume, when the owner lets the session thread drive it (so a hidden window still follows requests).
+    volume: Mutex<Option<Arc<crate::sink::Volume>>>,
 }
 
 impl Status {
@@ -83,6 +85,10 @@ impl Status {
     /// `Snapshot::can_play_here` is set.
     pub fn play_here(&self) {
         self.play_here_left.store(3, Ordering::Relaxed);
+    }
+    /// Let the session thread apply volume requests to this output volume and report its level, with no UI involved.
+    pub fn attach_volume(&self, v: Arc<crate::sink::Volume>) {
+        *self.volume.lock().unwrap() = Some(v);
     }
     /// Ask the device that is playing to use this level. Only meaningful while `Snapshot::remote_volume` is set.
     pub fn set_remote_volume(&self, percent: u32) {
@@ -419,6 +425,9 @@ fn punch_loop(sh: &Shared) {
                 vol_next = now + 150;
             }
             // Report our own level when it changes, and every 1.5 s so a lost packet only delays it.
+            if let Some(v) = sh.status.volume.lock().unwrap().as_ref() {
+                sh.status.vol_local.store(v.percent() as u16 + 1, Ordering::Relaxed);
+            }
             let local = sh.status.vol_local.load(Ordering::Relaxed);
             if local > 0 && (local != vol_sent || now >= vol_report_at) && !sh.status.snapshot().standby {
                 let _ = l.sock.send(&seal(&l.ctl, PacketType::Control, &Message::VolumeLevel { percent: (local - 1) as u8 }.encode()));
@@ -518,12 +527,19 @@ fn recv_loop(sh: &Shared, s: &Settings) -> Result<(), String> {
                 }
                 match Message::decode(&payload) {
                     Ok(Some((Message::SetVolume { percent }, _))) => {
-                        sh.status.vol_apply.store(percent as u16 + 1, Ordering::Relaxed);
+                        match sh.status.volume.lock().unwrap().as_ref() {
+                            Some(v) => v.set(percent as u32),
+                            None => sh.status.vol_apply.store(percent as u16 + 1, Ordering::Relaxed),
+                        }
                     }
                     Ok(Some((Message::VolumeLevel { percent }, _))) if sh.status.snapshot().remote_volume != Some(percent) => {
                         sh.status.update(|x| x.remote_volume = Some(percent));
                     }
                     _ => {}
+                }
+                if let Ok(Some((Message::SenderStopped, _))) = Message::decode(&payload) {
+                    sh.fail("The sender stopped. Press Start receiving to listen again.".into());
+                    return Err("stopped".into());
                 }
                 if let Ok(Some((Message::PlayHereSupported, _))) = Message::decode(&payload) {
                     if !sh.status.snapshot().can_play_here {

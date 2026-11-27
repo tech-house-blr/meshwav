@@ -59,6 +59,8 @@ pub enum Message {
     SetVolume { percent: u8 },
     /// The playing receiver's current level. Receiver to agent, then agent to the other receivers.
     VolumeLevel { percent: u8 },
+    /// The sender is shutting down or has stopped sending. Agent to receivers; they stop instead of waiting.
+    SenderStopped,
 }
 
 pub const REJECT_BITRATE: u8 = 1;
@@ -160,6 +162,7 @@ impl Message {
             Message::PlayHereSupported => w.u8(17),
             Message::SetVolume { percent } => { w.u8(18); w.u8(*percent); }
             Message::VolumeLevel { percent } => { w.u8(19); w.u8(*percent); }
+            Message::SenderStopped => w.u8(20),
         }
         let len = (w.0.len() - 2) as u16;
         w.0[0..2].copy_from_slice(&len.to_be_bytes());
@@ -192,6 +195,7 @@ impl Message {
             17 => Message::PlayHereSupported,
             18 => Message::SetVolume { percent: r.pct()? },
             19 => Message::VolumeLevel { percent: r.pct()? },
+            20 => Message::SenderStopped,
             _ => return Err(ProtocolError::BadControl("unknown type")),
         };
         if !r.0.is_empty() { return Err(ProtocolError::BadControl("trailing bytes")) }

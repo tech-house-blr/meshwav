@@ -30,6 +30,7 @@ object ControlWire {
     const val TYPE_PLAY_HERE_SUPPORTED = 17
     const val TYPE_SET_VOLUME = 18
     const val TYPE_VOLUME_LEVEL = 19
+    const val TYPE_SENDER_STOPPED = 20
     const val REJECT_BITRATE = 1
     const val REJECT_FRAME = 2
     const val REJECT_ENCODER = 3
@@ -54,6 +55,8 @@ object ControlWire {
         data class SetVolume(val percent: Int) : Msg()
         /** The sender relays the level (0..100) of the device that is playing. */
         data class VolumeLevel(val percent: Int) : Msg()
+        /** The sender stopped or is shutting down: stop instead of waiting. */
+        object SenderStopped : Msg()
         /** Answer to our Ping: our own send time echoed, and the agent's clock (microseconds) when it answered. */
         data class Pong(val echoUs: Long, val agentUs: Long) : Msg()
         /** The audio frame stamped `ts` was captured at agent-clock time `agentUs`. */
@@ -94,6 +97,7 @@ object ControlWire {
             TYPE_PLAY_HERE_SUPPORTED -> if (len == 1) Msg.PlayHereSupported else null
             TYPE_SET_VOLUME -> if (len == 2) b.get().toInt().let { if (it in 0..100) Msg.SetVolume(it) else null } else null
             TYPE_VOLUME_LEVEL -> if (len == 2) b.get().toInt().let { if (it in 0..100) Msg.VolumeLevel(it) else null } else null
+            TYPE_SENDER_STOPPED -> if (len == 1) Msg.SenderStopped else null
             TYPE_PONG -> if (len == 17) Msg.Pong(b.long, b.long) else null
             TYPE_TIME_REF -> if (len == 13) Msg.TimeRef(b.int.toLong() and 0xffffffffL, b.long) else null
             TYPE_SET_CONFIG -> if (len == 9) Msg.SetConfig(b.short.toInt() and 0xffff, b.int, b.get().toInt() and 0xff, b.get().toInt() and 0xff) else null
