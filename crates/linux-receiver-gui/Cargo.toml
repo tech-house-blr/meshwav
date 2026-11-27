@@ -19,7 +19,7 @@ meshwav-receiver = { path = "../linux-receiver" }
 png = "0.17"
 
 [target.'cfg(unix)'.dependencies]
-eframe = { version = "0.29", default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
 ksni = { version = "0.3", features = ["blocking"] }
 
 [target.'cfg(windows)'.dependencies]
