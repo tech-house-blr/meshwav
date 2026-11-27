@@ -1,0 +1,12 @@
+# Checked in CI by `cargo deny check advisories bans sources`.
+[advisories]
+yanked = "deny"
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"   # nothing here is published to crates.io; workspace crates are path dependencies
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
