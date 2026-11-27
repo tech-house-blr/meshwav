@@ -4,8 +4,7 @@ yanked = "deny"
 
 [bans]
 multiple-versions = "allow"
-wildcards = "deny"
-allow-wildcard-paths = true   # our own path dependencies carry no version
+wildcards = "allow"   # nothing here is published to crates.io; workspace crates are path dependencies
 
 [sources]
 unknown-registry = "deny"
