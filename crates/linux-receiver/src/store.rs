@@ -62,9 +62,21 @@ pub fn unhex32(s: &str) -> Option<[u8; 32]> {
     Some(k)
 }
 
+/// Create the folder (and parents) and make it private to this user, so even the names of key files
+/// are not listable by others. Best effort: a failure to tighten is not an error.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        private_dir(dir)?;
     }
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     let mut opts = std::fs::OpenOptions::new();
@@ -226,6 +238,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(d.join("identity")).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700, "the folder is private too");
             std::fs::set_permissions(d.join("identity"), std::fs::Permissions::from_mode(0o644)).unwrap();
             assert!(load_or_create_identity(&d).is_err(), "a world-readable key is refused");
         }
