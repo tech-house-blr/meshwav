@@ -25,7 +25,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 ctrlc = "3"
-cpal = "0.15"
+cpal = "0.18"
 windows = { version = "0.54", features = ["implement", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com", "Win32_Foundation"] }
 
 [target.'cfg(windows)'.build-dependencies]
