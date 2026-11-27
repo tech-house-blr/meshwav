@@ -33,6 +33,9 @@ impl Reassembler {
 
     /// Feed one fragment. Returns the complete frame once all fragments arrived.
     pub fn push(&mut self, h: &Header, payload: Vec<u8>) -> Option<Frame> {
+        if h.frag_cnt == 0 || h.frag_idx >= h.frag_cnt {
+            return None; // malformed fragment numbering
+        }
         if h.frag_cnt == 1 {
             return Some(Frame { timestamp: h.timestamp, flags: h.flags, data: payload });
         }

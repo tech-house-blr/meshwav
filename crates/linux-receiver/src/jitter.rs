@@ -137,7 +137,7 @@ impl JitterBuffer {
         if want > self.target_frames {
             self.target_frames = want;
             self.last_shrink = now_ms;
-        } else if want < self.target_frames && now_ms - self.last_shrink >= SHRINK_EVERY_MS {
+        } else if want < self.target_frames && now_ms.saturating_sub(self.last_shrink) >= SHRINK_EVERY_MS {
             self.target_frames -= 1;
             self.last_shrink = now_ms;
         }
@@ -146,7 +146,7 @@ impl JitterBuffer {
     /// Called once per playout slot (one frame of audio needed).
     pub fn pop(&mut self, now_ms: u64) -> Out {
         if self.next < 0 {
-            if self.buf.len() >= self.target_frames {
+            if self.buf.len() >= self.target_frames.max(1) {
                 self.next = *self.buf.keys().next().unwrap();
                 self.empty_since = 0;
                 self.hole_since = 0;
