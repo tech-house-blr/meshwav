@@ -656,6 +656,22 @@ fn volume_requests_reach_only_the_playing_receiver() {
     assert!(!eb.iter().any(|e| matches!(e, Ev::Ctl(Message::VolumeLevel { percent: 99 }))), "only the playing device sets the level");
 }
 
+#[cfg(unix)]
+#[test]
+fn receivers_are_told_when_the_sender_stops() {
+    let dir = workdir("stopped");
+    let port = free_port();
+    let agent = start(&dir, true, port);
+    let (pk, code) = agent.pairing();
+    let ka = Keypair::generate();
+    let da = dial(port, &ka, pk, Some(pairing_psk(&pk, &code)), 1).unwrap();
+    let mut la = Link::new(&da);
+    assert!(!seqs(&la.pump(500)).is_empty());
+    unsafe { libc::kill(agent.child.id() as i32, libc::SIGTERM) };
+    let ev = la.pump(2000);
+    assert!(ev.iter().any(|e| matches!(e, Ev::Ctl(Message::SenderStopped))), "a receiver is told the sender stopped");
+}
+
 #[test]
 fn chosen_receiver_survives_an_agent_restart() {
     let dir = workdir("remember");

@@ -296,6 +296,7 @@ impl App {
         let settings = Settings { agent: p.agent, agent_key: p.key, identity, name: self.name.clone() };
         let (stop, status) = (Arc::new(AtomicBool::new(false)), Arc::new(Status::default()));
         status.set_lossless(self.lossless);
+        status.attach_volume(self.volume.clone());
         let (st, sa) = (stop.clone(), status.clone());
         let sink = Gain::new(sink, self.volume.clone());
         let handle = std::thread::spawn(move || run(&settings, Box::new(sink), &st, &sa));
@@ -542,7 +543,10 @@ impl eframe::App for App {
                 for (m, label) in [(Mode::Receive, "Receive"), (Mode::Send, "Send")] {
                     let on = to == m && !self.settings;
                     let t = if on { RichText::new(label).color(ACCENT_INK) } else { RichText::new(label) };
-                    if ui.selectable_label(on, t).clicked() {
+                    // The other side is busy: it has to be stopped first, so audio never keeps running unseen.
+                    let busy = m != self.mode && if m == Mode::Send { self.worker.is_some() } else { self.send.is_running() };
+                    let hint = if m == Mode::Send { "Stop receiving to use Send" } else { "Stop sending to use Receive" };
+                    if ui.add_enabled(!busy, egui::SelectableLabel::new(on, t)).on_disabled_hover_text(hint).clicked() {
                         self.settings = false;
                         to = m;
                     }
@@ -732,28 +736,6 @@ impl App {
         } else if self.lossless {
             ui.label(RichText::new("Sends the audio uncompressed, about 1.7 Mbit/s, in 5 ms packets.").color(MUTED));
         }
-        ui.add_space(8.0);
-        if self.paired.is_some() {
-            ui.horizontal_wrapped(|ui| {
-                if self.confirm_forget {
-                    ui.label(RichText::new("Forget this sender?").color(WARN));
-                    if ui.button("Forget").clicked() {
-                        self.stop();
-                        let _ = store::forget(&self.dir);
-                        self.paired = None;
-                        self.agent_name.clear();
-                        self.detail_open = false;
-                        self.confirm_forget = false;
-                        self.message = None;
-                    }
-                    if ui.button("Keep").clicked() {
-                        self.confirm_forget = false;
-                    }
-                } else if ui.button("Forget sender").clicked() {
-                    self.confirm_forget = true;
-                }
-            });
-        }
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(6.0);
@@ -802,12 +784,9 @@ impl App {
         }
         ui.add_space(20.0);
         // Another device asked this one to change its level, and we tell the sender ours while we play.
-        if let Some(w) = &self.worker {
-            if let Some(p) = w.status.take_volume_request() {
-                self.slider = p;
-                self.volume.set(p);
-            }
-            w.status.report_volume(self.volume.percent());
+        if self.worker.is_some() {
+            // The session thread applies requests and reports the level itself; just follow it.
+            self.slider = self.volume.percent();
         }
         // On standby with a playing device that reports its level, the slider controls that device.
         let remote = if running && snap.standby { snap.remote_volume } else { None };
@@ -851,6 +830,33 @@ impl App {
         } else if ui.add(primary("Resume receiving").min_size(egui::vec2(160.0, 36.0))).clicked() {
             self.start();
         }
+        ui.add_space(14.0);
+        self.forget_ui(ui);
+    }
+
+    fn forget_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        if self.paired.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                if self.confirm_forget {
+                    ui.label(RichText::new("Forget this sender?").color(WARN));
+                    if ui.button("Forget").clicked() {
+                        self.stop();
+                        let _ = store::forget(&self.dir);
+                        self.paired = None;
+                        self.agent_name.clear();
+                        self.detail_open = false;
+                        self.confirm_forget = false;
+                        self.message = None;
+                    }
+                    if ui.button("Keep").clicked() {
+                        self.confirm_forget = false;
+                    }
+                } else if ui.button("Forget sender").clicked() {
+                    self.confirm_forget = true;
+                }
+            });
+        }
     }
 
     /// What used to sit on the main screen: where the sender is, the output, the quality, the numbers.
@@ -880,7 +886,7 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        ui.label(RichText::new("Output, quality and forgetting this sender are in Settings.").color(MUTED));
+        ui.label(RichText::new("Output and quality are in Settings.").color(MUTED));
     }
 }
 

@@ -199,6 +199,13 @@ impl Fleet {
         v.iter().map(|s| s.peer).collect()
     }
 
+    /// Tell every receiver that is connected that this sender is stopping.
+    fn tell_stopped(&mut self, sock: &UdpSocket) {
+        for s in self.sessions.iter_mut().filter(|s| s.online() && !s.closed) {
+            s.send_control(&Message::SenderStopped, sock);
+        }
+    }
+
     fn any_online(&self) -> bool {
         self.sessions.iter().any(Session::online)
     }
@@ -899,9 +906,14 @@ pub fn run(args: Vec<String>) {
     install_stop_handlers();
     // Ctrl-C and SIGTERM must stop the agent with or without the redirect (the handler only sets a flag).
     {
-        let (redirect, session) = (redirect.clone(), session.clone());
+        let (redirect, session, bye_sock) = (redirect.clone(), session.clone(), sock.try_clone().unwrap());
         std::thread::spawn(move || loop {
             if STOP.load(Ordering::SeqCst) {
+                // Tell the receivers, so they stop instead of waiting for a sender that is gone (UDP: three copies).
+                for _ in 0..3 {
+                    session.lock().unwrap().tell_stopped(&bye_sock);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 if redirect_on {
                     redirect.lock().unwrap().shutdown();
                 }

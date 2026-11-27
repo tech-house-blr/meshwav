@@ -203,6 +203,7 @@ fn samples() -> Vec<Message> {
         Message::SetVolume { percent: 0 },
         Message::SetVolume { percent: 100 },
         Message::VolumeLevel { percent: 37 },
+        Message::SenderStopped,
         Message::Ping { t_us: 12345 },
         Message::Pong { echo_us: 1, t_us: 2 },
     ]
@@ -341,6 +342,7 @@ fn runtime_config_messages_have_fixed_wire_bytes() {
     assert_eq!(hex(Message::PlayHereSupported), "000111");
     assert_eq!(hex(Message::SetVolume { percent: 50 }), "00021232");
     assert_eq!(hex(Message::VolumeLevel { percent: 100 }), "00021364");
+    assert_eq!(hex(Message::SenderStopped), "000114");
 }
 
 #[test]

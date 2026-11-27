@@ -406,6 +406,10 @@ class StreamReceiver(
                         try { applyMusicVolume(m.percent) } catch (_: Exception) {}
                     } else if (m is ControlWire.Msg.VolumeLevel) {
                         Stats.remoteVolume = m.percent
+                    } else if (m is ControlWire.Msg.SenderStopped) {
+                        Stats.state = "The sender stopped"
+                        context?.startService(android.content.Intent(context, PlaybackService::class.java).setAction(PlaybackService.ACTION_STOP))
+                        Unit
                     } else if (m is ControlWire.Msg.PlayHereSupported) {
                         Stats.canPlayHere = true
                     } else if (m is ControlWire.Msg.Active) {

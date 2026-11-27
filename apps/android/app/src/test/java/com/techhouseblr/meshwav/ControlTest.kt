@@ -35,6 +35,8 @@ class ControlTest {
         assertEquals(ControlWire.Msg.VolumeLevel(100), ControlWire.decode(hex("00021364")))
         assertNull(ControlWire.decode(hex("00021265")))
         assertNull(ControlWire.decode(hex("000213ff")))
+        assertEquals(ControlWire.Msg.SenderStopped, ControlWire.decode(hex("000114")))
+        assertNull(ControlWire.decode(hex("00021400")))
         assertEquals("00021232", ControlWire.encodeSetVolume(50).joinToString("") { "%02x".format(it) })
         assertEquals("00021364", ControlWire.encodeVolumeLevel(100).joinToString("") { "%02x".format(it) })
         assertEquals("000110", ControlWire.encodePlayHere().joinToString("") { "%02x".format(it) })
