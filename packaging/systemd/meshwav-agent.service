@@ -15,5 +15,29 @@ TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
 
+# Sandbox. The agent needs the network, the sound server socket and its own config folder, nothing
+# else. Home is read-only except ~/.config/meshwav; the "+" step creates that folder before the
+# sandbox is set up, so a first start (nothing paired yet) still works.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%h/.config/meshwav
+ExecStartPre=+/bin/mkdir -p %h/.config/meshwav
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+UMask=0077
+
 [Install]
 WantedBy=default.target
