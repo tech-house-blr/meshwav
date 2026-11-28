@@ -1,11 +1,28 @@
+# Major-version bumps are done by hand (audio, GUI and handshake crates need real testing);
+# minor and patch updates come in as one grouped PR per ecosystem.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule: {interval: weekly}
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: gradle
     directory: /apps/android
     schedule: {interval: weekly}
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      gradle-minor-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: weekly}
+    groups:
+      actions:
+        update-types: ["minor", "patch", "major"]
