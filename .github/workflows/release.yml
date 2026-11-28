@@ -48,7 +48,7 @@ jobs:
           /tmp/deb/usr/bin/meshwav send --bind 127.0.0.1:1 --log-level nope 2>&1 | grep "not one of"
           grep -x "ExecStart=/usr/bin/meshwav send" /tmp/deb/usr/lib/systemd/user/meshwav-agent.service
       - run: cd dist && sha256sum * > SHA256SUMS-${{ matrix.arch }}.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-${{ matrix.arch }}
           path: dist/*
@@ -78,7 +78,7 @@ jobs:
           mkdir dist && cp "$exe" "dist/$name"
           (cd dist && sha256sum "$name" > "$name.sha256")
           ls -l dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-windows
           path: dist/*
